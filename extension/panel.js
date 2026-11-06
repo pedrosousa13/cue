@@ -115,6 +115,22 @@ const focusTab = async (item) => {
   await chrome.windows.update(item.windowId, { focused: true }).catch(() => {});
 };
 
+// The browser shows a popup only after its page finishes loading, and images
+// count. Artwork and favicons come from the network, so setting them before
+// load would hold the popup closed until every thumbnail arrived. Until load,
+// images are only recorded; they are fetched once the popup is on screen.
+const deferredImages = new Set();
+function setImage(img, src) {
+  if (img.dataset.src === src) return;
+  img.dataset.src = src;
+  if (document.readyState === "complete") img.src = src;
+  else deferredImages.add(img);
+}
+addEventListener("load", () => {
+  for (const img of deferredImages) img.src = img.dataset.src;
+  deferredImages.clear();
+});
+
 // --- Cards ------------------------------------------------------------------
 const listEl = document.getElementById("list");
 const emptyEl = document.getElementById("empty");
@@ -236,13 +252,13 @@ function paint(card) {
   card.sourceText.textContent = state.host.replace(/^www\./, "");
 
   const favicon = SAFE_IMAGE.test(item.favIconUrl) ? item.favIconUrl : "";
-  if (card.sourceIcon.getAttribute("src") !== favicon) card.sourceIcon.src = favicon;
+  setImage(card.sourceIcon, favicon);
   card.sourceIcon.hidden = !favicon;
 
   const art = state.artwork || favicon;
   card.art.classList.toggle("fallback", !state.artwork);
   if (art) {
-    if (card.artImg.getAttribute("src") !== art) card.artImg.src = art;
+    setImage(card.artImg, art);
     card.artImg.hidden = false;
   } else {
     card.artImg.hidden = true;
@@ -346,7 +362,17 @@ function bestFrame(entry) {
   return best;
 }
 
-function update(tabs = {}) {
+// The last list, kept so the next popup can draw it synchronously: the popup
+// then opens at its final size instead of empty and growing. It is replaced
+// by live state a few milliseconds later.
+const CACHE = "cue:tabs";
+
+function update(tabs = {}, fromCache = false) {
+  if (!fromCache) {
+    try {
+      localStorage.setItem(CACHE, JSON.stringify(tabs));
+    } catch {}
+  }
   items = Object.values(tabs)
     .map((entry) => {
       const frame = bestFrame(entry);
@@ -404,6 +430,10 @@ pauseAllEl.onclick = () => items.filter((i) => i.state.playing).forEach((i) => c
 const theme = new URLSearchParams(location.search).get("theme");
 if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
 
+try {
+  const cached = JSON.parse(localStorage.getItem(CACHE));
+  if (cached) update(cached, true);
+} catch {}
 chrome.storage.session.get("tabs").then(({ tabs }) => update(tabs));
 chrome.storage.session.onChanged.addListener((changes) => {
   if (changes.tabs) update(changes.tabs.newValue);

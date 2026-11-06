@@ -69,6 +69,14 @@ const PAGES = {
       ms.setActionHandler("togglecamera", () => { calls.cam++; cam = !cam; ms.setCameraActive(cam); });
       ms.setActionHandler("hangup", () => calls.hang++);
     </script>`,
+  "/slow.html": `<!doctype html><title>Slow art page</title>
+    <audio id="a" src="/tone.wav"></audio>
+    <script>
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: "Slow Art", artist: "Slow Artist",
+        artwork: [{ src: "/slow-art.svg", sizes: "128x128", type: "image/svg+xml" }],
+      });
+    </script>`,
   "/art.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1" fill="#f80"/></svg>`,
 };
 
@@ -90,6 +98,10 @@ const server = createServer((req, res) => {
       "content-length": end - start + 1,
     });
     return res.end(WAV.subarray(start, end + 1));
+  }
+  if (req.url === "/slow-art.svg") {
+    // A thumbnail on a slow network.
+    return setTimeout(() => res.writeHead(200, { "content-type": "image/svg+xml" }).end(PAGES["/art.svg"]), 3000);
   }
   const body = PAGES[req.url.split("?")[0]];
   if (!body) return res.writeHead(404).end();
@@ -318,6 +330,26 @@ await step("page reload clears the stale card", async () => {
 await step("volume is remembered for the site after a reload", async () => {
   await audio(() => document.getElementById("a").play());
   await until(() => audio(() => Math.abs(document.getElementById("a").volume - 0.3) < 0.01));
+});
+
+await step("slow artwork does not delay the popup", async () => {
+  const slow = await ctx.newPage();
+  await slow.goto(`${base}/slow.html`);
+  await slow.evaluate(() => document.getElementById("a").play());
+  // Let the hub learn about the tab and the panel cache its card.
+  await panel.bringToFront();
+  await panel.locator(".card").filter({ hasText: "Slow Artist" }).waitFor({ timeout: 4000 });
+
+  const popup = await ctx.newPage();
+  await popup.goto(`chrome-extension://${extId}/popup.html`);
+  // The browser shows a popup at its load event. It must not wait for art.
+  const loadMs = await popup.evaluate(() => performance.getEntriesByType("navigation")[0].loadEventEnd);
+  assert.ok(loadMs < 1000, `load took ${Math.round(loadMs)}ms`);
+  // The cached card is drawn before live state arrives, and art still loads.
+  await popup.locator(".card").filter({ hasText: "Slow Artist" }).waitFor({ timeout: 1000 });
+  await until(() => popup.evaluate(() => [...document.querySelectorAll(".art img")].some((i) => i.src.endsWith("/slow-art.svg") && i.complete && i.naturalWidth > 0)), 6000);
+  await popup.close();
+  await slow.close();
 });
 
 await step("toolbar popup page has a fixed popup width", async () => {
