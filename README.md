@@ -4,7 +4,7 @@ Media controls for every tab. Cue lists every tab that plays audio or video, and
 
 ## Features
 
-- **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Playing tabs come first.
+- **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Playing tabs come first. When a site does not publish what is playing, Cue reads it from the page: the post title and subreddit on Reddit, or the article heading on other sites, with the video's thumbnail as artwork.
 - **Real next and previous.** Cue calls the site's own track handlers (the Media Session API), the same ones that your keyboard media keys use. This works on any site that supports media keys, with no per-site code. When a site has no track handlers, the buttons skip 10 seconds.
 - **Seek bar and clock.** Drag to seek. The clock stops while the player buffers, and Cue corrects it if it drifts from the page. When a site publishes chapters, the seek bar marks them and the card names the current chapter.
 - **Live streams.** The card shows `LIVE` at the live edge. When you pause or fall behind, it shows how far behind you are (for example `LIVE −0:42`) and a **Go live** button.
@@ -128,7 +128,8 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 - metadata, artwork, and the clock
 - the YouTube player clock, seek, and volume, on a page that imitates YouTube's player
 - clock correction when the page's clock jumps without a media event
-- YouTube ads: the "Ad" label, seeking off, and Skip ad
+- YouTube ads: the "Ad" label, seeking and 10-second skips off, and Skip ad
+- titles from the page when a site publishes none: a Reddit-like post and a news article
 - live streams: `LIVE`, the gap growing while paused, and Go live; and a site that declares live with `setPositionState()`
 - media inside a shadow root (the test calls the audible-tab handler directly, because headless Chromium never marks a tab as audible)
 - next and previous through Media Session handlers

@@ -6,7 +6,7 @@
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
   // Keep equal to manifest.json "version"; npm test checks it.
-  const VERSION = "0.4.0";
+  const VERSION = "0.4.1";
   const INSTALLED = Symbol.for("cue.installed");
   if (window[INSTALLED] === VERSION) return; // already running in this frame
   // An older copy is still here after an extension update. Tell it to stop
@@ -199,7 +199,11 @@
   };
 
   // During an ad, YouTube plays the ad in the same element and marks the player.
-  const youtubeAd = (mp) => mp.classList.contains("ad-showing");
+  // Two signals, so one renamed class does not hide every ad.
+  const youtubeAd = (mp) =>
+    mp.classList.contains("ad-showing") ||
+    mp.classList.contains("ad-interrupting") ||
+    !!mp.querySelector(".ytp-ad-player-overlay, .ytp-ad-player-overlay-layout");
 
   // YouTube's own Skip button, when it is on screen. Cue only presses it when
   // the user clicks Skip ad, the same as clicking it on the page.
@@ -258,6 +262,38 @@
       } catch {}
     }
     if (el && el.seekable && el.seekable.length) el.currentTime = el.seekable.end(el.seekable.length - 1);
+  };
+
+  // --- What is playing, when the site does not say ---------------------------
+  // Sites without Media Session metadata (Reddit, news sites, blogs) leave Cue
+  // with the tab title, which is often just the site name. Look around the
+  // element instead: Reddit's post element, else the enclosing article.
+  const up = (node) => node.parentNode || (node instanceof ShadowRoot ? node.host : null);
+
+  const contextInfo = (el) => {
+    const info = { title: "", artist: "", artwork: "" };
+    if (el instanceof HTMLVideoElement && el.poster) info.artwork = el.poster;
+    for (let node = el, depth = 0; node && depth < 40; node = up(node), depth++) {
+      if (node.nodeType !== 1) continue;
+      // Reddit: <shreddit-post post-title="…" subreddit-prefixed-name="r/…">
+      const postTitle = node.getAttribute("post-title");
+      if (postTitle) {
+        info.title = postTitle;
+        info.artist = node.getAttribute("subreddit-prefixed-name") || node.getAttribute("author") || "";
+        break;
+      }
+      if (node.tagName === "ARTICLE" || node.getAttribute("role") === "article") {
+        const heading = node.querySelector("h1, h2, h3");
+        info.title = (heading && heading.textContent) || node.getAttribute("aria-label") || "";
+        break;
+      }
+    }
+    if (!info.title) info.title = el.getAttribute("aria-label") || el.title || "";
+    if (!info.artist) {
+      const site = document.querySelector('meta[property="og:site_name"]');
+      info.artist = (site && site.content) || "";
+    }
+    return info;
   };
 
   // --- Picking the element the user is listening to --------------------------
@@ -368,6 +404,7 @@
     const edge = live ? liveEdge(el, mp) : null;
 
     const actions = [...handlers.keys()];
+    const context = el && !(md && md.title) ? contextInfo(el) : null;
     if (ad && !actions.includes("skipad") && youtubeSkipButton()) actions.push("skipad");
 
     return {
@@ -381,10 +418,10 @@
       canGoLive: !!edge,
       ad,
       rate,
-      title: text(md && md.title) || text(document.title) || location.hostname,
-      artist: text(md && md.artist),
+      title: text(md && md.title) || text(context && context.title) || text(document.title) || location.hostname,
+      artist: text(md && md.artist) || text(context && context.artist),
       album: text(md && md.album),
-      artwork: md ? artworkUrl(md.artwork) : "",
+      artwork: (md && artworkUrl(md.artwork)) || (context ? artworkUrl([{ src: context.artwork }]) : ""),
       actions,
       // Respect a site that turns picture-in-picture off for its video.
       video: el instanceof HTMLVideoElement && el.videoWidth > 0 && !el.disablePictureInPicture,

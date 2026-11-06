@@ -136,6 +136,20 @@ const PAGES = {
       navigator.mediaSession.metadata = new MediaMetadata({ title: "Radio", artist: "Site Live" });
       navigator.mediaSession.setPositionState({ duration: Infinity, position: 0 });
     </script>`,
+  // Reddit-like: no Media Session; the post element carries the title, and the
+  // player keeps its video in a shadow root.
+  "/reddit.html": `<!doctype html><title>Reddit - Dive into anything</title>
+    <shreddit-post post-title="Cat does a perfect backflip" subreddit-prefixed-name="r/aww">
+      <shreddit-player-2></shreddit-player-2>
+    </shreddit-post>
+    <script>
+      const root = document.querySelector("shreddit-player-2").attachShadow({ mode: "open" });
+      root.innerHTML = '<video id="v" src="/tone.wav" poster="/art.svg"></video>';
+      window.v = root.getElementById("v");
+    </script>`,
+  "/article.html": `<!doctype html><title>Example News</title>
+    <meta property="og:site_name" content="Example News">
+    <article><h2>Storm hits the coast</h2><audio id="a" src="/tone.wav"></audio></article>`,
   "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
   "/nopip.html": `<!doctype html><title>No PiP page</title>
     <canvas id="c" width="320" height="180"></canvas>
@@ -470,6 +484,7 @@ await step("YouTube player: track clock, track seek, player volume", async () =>
   await page.evaluate(() => startYtAd());
   await ycard.locator(".chapter", { hasText: "Ad" }).waitFor({ timeout: 2000 });
   assert.equal(await ycard.locator('input[aria-label="Seek"]').isDisabled(), true);
+  assert.equal(await ycard.locator('button[aria-label="Forward 10 seconds"]').isDisabled(), true);
   await ycard.locator("button.skip-ad").click();
   await until(() => page.evaluate(() => yt.skipped === 1));
   await until(async () => !(await ycard.locator(".chapter").isVisible()));
@@ -529,6 +544,29 @@ await step("audible tab with media in a shadow root is found", async () => {
   }, `${base}/shadow.html`);
   await panel.bringToFront();
   await panel.locator(".card").filter({ hasText: "Shadow page" }).waitFor({ timeout: 6000 });
+  await page.close();
+});
+
+await step("Reddit post: title and subreddit from the post, art from the poster", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/reddit.html`);
+  await page.evaluate(() => v.play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Cat does a perfect backflip" });
+  await c.waitFor({ timeout: 4000 });
+  assert.match(await c.locator(".artist").textContent(), /r\/aww/);
+  assert.match(await c.locator(".art img").getAttribute("src"), /\/art\.svg$/);
+  await page.close();
+});
+
+await step("article page: title from the article heading, site from og:site_name", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/article.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Storm hits the coast" });
+  await c.waitFor({ timeout: 4000 });
+  assert.match(await c.locator(".artist").textContent(), /Example News/);
   await page.close();
 });
 

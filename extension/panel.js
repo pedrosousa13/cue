@@ -325,8 +325,9 @@ function paint(card) {
   setIcon(card.next, nextTrack ? "next" : "fwd10", nextTrack ? "Next track" : "Forward 10 seconds");
   card.prev.dataset.action = prevTrack ? "previoustrack" : "seekbackward";
   card.next.dataset.action = nextTrack ? "nexttrack" : "seekforward";
-  card.prev.disabled = state.live && !prevTrack;
-  card.next.disabled = state.live && !nextTrack;
+  // Skipping 10 s makes no sense in a live stream or an ad.
+  card.prev.disabled = (state.live || state.ad) && !prevTrack;
+  card.next.disabled = (state.live || state.ad) && !nextTrack;
 
   card.rate.textContent = `${Number(state.rate.toFixed(2))}×`;
   card.rate.hidden = state.live || state.ad || has("skipad"); // during an ad, Skip ad takes its place
