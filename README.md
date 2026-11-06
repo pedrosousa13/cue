@@ -61,7 +61,9 @@ Cue does not poll. Most media panels inject a script into each tab once a second
 2. The service worker keeps the list in `chrome.storage.session`.
 3. The panel reads that list and advances the clock itself between updates.
 
-When nothing plays, Cue uses no CPU. When media plays, each tab sends a few messages per track, not one per second.
+When nothing plays, Cue does no periodic work. When media plays, each tab sends a few messages per track, not one per second.
+
+The popup draws the last known list immediately and loads artwork after it opens. The browser shows a popup only after its page finishes loading, so artwork from a slow network would otherwise keep the popup closed.
 
 The page script also records the handlers that the site registers with `navigator.mediaSession`. That is how next and previous work on any site, and why Cue can use the site's own clock when the site publishes one. Some players, for example YouTube's autoplay queue, put several tracks into one media element. For those players the element's clock is wrong, and the site's clock is correct.
 
@@ -70,6 +72,51 @@ The page script also records the handlers that the site registers with `navigato
 Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings and the volume you chose for each site. See [PRIVACY.md](PRIVACY.md).
 
 Cue asks for access to all sites because media can play on any site. It uses this access only to read playback state and to send the controls you click.
+
+## Known limitations
+
+- **The clock depends on the site.** Cue uses the site's own clock when the site publishes one with `navigator.mediaSession.setPositionState()`. Otherwise it uses the media element's clock. On players that put several tracks into one media element, the element's clock can show the wrong time after autoplay moves to the next track. This has not been checked on YouTube Music.
+- **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. The wrappers call the original functions and return their results. A site that checks for modified built-in functions can detect them.
+- **Some audio is not detected.** Cue finds media when it plays, loads, or is in the page. A site that plays audio from an element that is never added to the page, and that starts it without `play()`, does not appear in Cue.
+- **Sites can override the volume.** Some players, for example YouTube, keep their own volume setting and can replace the volume that Cue sets.
+- **Skip ad, call controls, and chapters need site support.** These buttons appear only when the site registers the related Media Session handlers or chapter data.
+- **Picture-in-picture is for video only.** Audio-only tabs do not show the button.
+- **Casting is not available.** Browsers do not let extensions use their Cast feature.
+- **The popup window itself.** Cue's page loads in a few tens of milliseconds. The remaining time between the click and the popup is the browser. In Vivaldi, a web panel opens faster than the toolbar popup because it stays loaded.
+
+## Testing
+
+### Automated
+
+`npm test` loads the extension into Playwright's Chromium, opens local test pages that play audio and video, and drives Cue through its real panel. It checks:
+
+- metadata, artwork, and the clock
+- next and previous through Media Session handlers
+- play, pause, seek, volume, speed, mute, and pause all
+- keyboard shortcuts
+- chapters, skip ad, and call controls
+- picture-in-picture
+- auto-pause and the settings page
+- hiding a card, and removing cards when tabs close or reload
+- volume memory per site
+- the badge count
+- that slow artwork does not delay the popup
+
+The tests use local test pages only. They do not use real sites.
+
+### Manual
+
+Before a release, check these on real sites:
+
+| Site | Check |
+| --- | --- |
+| YouTube Music | Let two songs autoplay. Compare Cue's clock with the site's clock. Next and previous change the track. |
+| YouTube | Play, pause, seek, and picture-in-picture work. During an ad, check whether **Skip ad** appears. Check whether a site volume set in Cue stays. |
+| Spotify (web) | Next and previous change the track. The clock matches. |
+| SoundCloud | Next and previous change the track. |
+| Google Meet | During a call, the microphone, camera, and hang-up buttons work and show the correct state. |
+| A live stream | The card shows `LIVE` and the seek bar is disabled. |
+| Vivaldi | The toolbar popup is full width. The web panel works at `chrome-extension://<id>/panel.html`. |
 
 ## Development
 
