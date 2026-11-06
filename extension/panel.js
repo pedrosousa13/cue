@@ -199,7 +199,7 @@ function createCard() {
   // Remembered per site; background.js reapplies it if that setting is on.
   volume.onchange = async () => {
     const host = card.item.state.host;
-    if (!host) return;
+    if (!host || !(await cueSettings()).rememberVolume) return;
     const { volumes = {} } = await chrome.storage.local.get("volumes");
     volumes[host] = Number(volume.value);
     await chrome.storage.local.set({ volumes });

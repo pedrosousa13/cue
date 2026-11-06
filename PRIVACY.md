@@ -17,7 +17,9 @@ This information stays in your browser. Cue keeps it in `chrome.storage.session`
 Cue also stores two things that last after the browser closes:
 
 - **Your settings**, in `chrome.storage.sync`. If you turn on browser sync, your browser syncs them to your other devices.
-- **The volume you chose for each site**, as a site host name and a number, in `chrome.storage.local`. This data does not leave your device. Turn off "Remember volume for each site" to stop this. Cue does not send it to any server. Cue makes no network requests of its own. The artwork image loads from the site that published it, as it does on that site.
+- **The volume you chose for each site**, as a site host name and a number, in `chrome.storage.local`. This data does not leave your device. Turn off "Remember volume for each site" to stop this.
+
+Cue does not send any of this to a server. Cue makes no network requests of its own. The artwork image loads from the site that published it, as it does on that site.
 
 ## Permissions
 
