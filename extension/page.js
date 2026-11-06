@@ -20,10 +20,15 @@
   const STABLE = [
     "playing", "duration", "live", "rate", "title", "artist", "album",
     "artwork", "actions", "video", "pip", "volume", "muted",
+    "chapters", "inCall", "mic", "camera",
   ];
+  // Video-call sites (Google Meet, for one) register these instead of, or as
+  // well as, playback handlers.
+  const CALL_ACTIONS = ["togglemicrophone", "togglecamera", "hangup"];
 
   const elements = new Set();
   const handlers = new Map();
+  const call = { mic: null, camera: null }; // null: the site has not said
   let positionState = null;
   let timer = 0;
   let last = null;
@@ -59,6 +64,17 @@
                 at: Date.now(),
               }
             : null;
+        schedule();
+        return result;
+      };
+    }
+
+    for (const [method, key] of [["setMicrophoneActive", "mic"], ["setCameraActive", "camera"]]) {
+      const original = proto[method];
+      if (!original) continue;
+      proto[method] = function (active) {
+        const result = original.call(this, active);
+        call[key] = !!active;
         schedule();
         return result;
       };
@@ -160,18 +176,26 @@
     return "";
   };
 
+  const chapterList = (md) =>
+    md && md.chapterInfo
+      ? Array.from(md.chapterInfo, (c) => ({ title: text(c.title), start: Number(c.startTime) || 0 })).slice(0, 100)
+      : [];
+
   const snapshot = () => {
     const found = primary();
-    if (!found) return null;
-    const { el } = found;
+    // A call page may have no media element the panel can use, but its
+    // mic, camera and hang-up handlers are still worth showing.
+    const inCall = CALL_ACTIONS.some((a) => handlers.has(a));
+    if (!found && !inCall) return null;
+    const el = found ? found.el : null;
     const md = navigator.mediaSession && navigator.mediaSession.metadata;
-    const playing = !el.paused && !el.ended;
+    const playing = !!el && !el.paused && !el.ended;
     const now = Date.now();
 
-    let position = el.currentTime;
-    let duration = el.duration;
-    let rate = el.playbackRate;
-    if (positionState) {
+    let position = el ? el.currentTime : 0;
+    let duration = el ? el.duration : 0;
+    let rate = el ? el.playbackRate : 1;
+    if (positionState && el) {
       const ps = positionState;
       position = Math.min(ps.duration, ps.position + (playing ? ((now - ps.at) / 1000) * ps.rate : 0));
       duration = ps.duration;
@@ -191,9 +215,14 @@
       actions: [...handlers.keys()],
       video: el instanceof HTMLVideoElement && el.videoWidth > 0,
       pip: !!document.pictureInPictureElement,
-      volume: el.volume,
-      muted: el.muted,
-      score: found.score,
+      volume: el ? el.volume : 1,
+      muted: el ? el.muted : false,
+      chapters: chapterList(md),
+      inCall,
+      mic: call.mic,
+      camera: call.camera,
+      // A call outranks any media in other frames of the same tab.
+      score: (found ? found.score : 0) + (inCall ? 16 : 0),
       host: location.hostname,
       at: now,
     };
@@ -291,6 +320,10 @@
         break;
       case "previoustrack":
       case "nexttrack":
+      case "skipad":
+      case "togglemicrophone":
+      case "togglecamera":
+      case "hangup":
         callHandler(action);
         break;
       case "seekbackward":

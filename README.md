@@ -6,11 +6,15 @@ Media controls for every tab. Cue lists every tab that plays audio or video, and
 
 - **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Playing tabs come first.
 - **Real next and previous.** Cue calls the site's own track handlers (the Media Session API), the same ones that your keyboard media keys use. This works on any site that supports media keys, with no per-site code. When a site has no track handlers, the buttons skip 10 seconds.
-- **Seek bar and clock.** Drag to seek. Live streams show `LIVE` and do not seek.
+- **Seek bar and clock.** Drag to seek. Live streams show `LIVE` and do not seek. When a site publishes chapters, the seek bar marks them and the card names the current chapter.
+- **Skip ad.** When a site registers a skip-ad handler, a **Skip ad** button appears.
+- **Video calls.** On call sites that support it (for example Google Meet), the card shows microphone, camera, and hang-up buttons.
 - **Picture-in-picture** for video tabs.
-- **Volume per tab**, plus a tab mute button.
+- **Volume per tab**, plus a tab mute button. Cue remembers the volume for each site.
 - **Playback speed**: 1×, 1.25×, 1.5×, 2×, 0.75×.
 - **Pause all** when more than one tab plays.
+- **Auto-pause (optional).** When a tab starts to play with sound, Cue pauses the other tabs.
+- **Hide a card** until that tab plays again.
 - **Keyboard shortcuts** for play/pause, next, previous, and mute. They can work when the browser is in the background.
 - **Light and dark themes**, keyboard access, and screen reader labels.
 
@@ -45,6 +49,10 @@ Pin Cue to the toolbar and click it to open the controls.
 
 To change a shortcut, or to make it work when the browser is not focused, open `chrome://extensions/shortcuts` and set its scope to **Global**. The shortcuts control the tab that is playing, or the tab that played most recently.
 
+### Settings
+
+Click the sliders icon in the Cue header, or open Cue's **Extension options**. You can turn on auto-pause, turn off volume memory, and choose what the toolbar badge counts: tabs in Cue, tabs playing, or nothing.
+
 ## How it works
 
 Cue does not poll. Most media panels inject a script into each tab once a second to read the player. Cue does this instead:
@@ -59,7 +67,7 @@ The page script also records the handlers that the site registers with `navigato
 
 ## Privacy
 
-Cue collects no data and makes no network requests. All state stays in your browser and is deleted when the browser closes. See [PRIVACY.md](PRIVACY.md).
+Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings and the volume you chose for each site. See [PRIVACY.md](PRIVACY.md).
 
 Cue asks for access to all sites because media can play on any site. It uses this access only to read playback state and to send the controls you click.
 

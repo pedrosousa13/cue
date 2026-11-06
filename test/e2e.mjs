@@ -34,11 +34,17 @@ const PAGES = {
     <script>
       const tracks = ["Track One", "Track Two", "Track Three"];
       let i = 0;
-      window.calls = { next: 0, prev: 0 };
+      window.calls = { next: 0, prev: 0, skipad: 0 };
       const meta = () => (navigator.mediaSession.metadata = new MediaMetadata({
         title: tracks[i], artist: "Test Artist", album: "Test Album",
         artwork: [{ src: "/art.svg", sizes: "128x128", type: "image/svg+xml" }],
+        chapterInfo: [{ title: "Intro", startTime: 0 }, { title: "Verse", startTime: 20 }, { title: "Chorus", startTime: 90 }],
       }));
+      // Like real sites: the skipad handler exists only while an ad plays.
+      window.startAd = () => navigator.mediaSession.setActionHandler("skipad", () => {
+        calls.skipad++;
+        navigator.mediaSession.setActionHandler("skipad", null);
+      });
       meta();
       navigator.mediaSession.setActionHandler("nexttrack", () => { i = (i + 1) % 3; calls.next++; meta(); });
       navigator.mediaSession.setActionHandler("previoustrack", () => { i = (i + 2) % 3; calls.prev++; meta(); });
@@ -51,6 +57,17 @@ const PAGES = {
       let f = 0;
       setInterval(() => { g.fillStyle = "hsl(" + (f++ * 7) % 360 + ",70%,50%)"; g.fillRect(0, 0, 320, 180); }, 50);
       document.getElementById("v").srcObject = c.captureStream(20);
+    </script>`,
+  "/call.html": `<!doctype html><title>Call page</title>
+    <script>
+      window.calls = { mic: 0, cam: 0, hang: 0 };
+      let mic = true, cam = true;
+      const ms = navigator.mediaSession;
+      ms.setMicrophoneActive(true);
+      ms.setCameraActive(true);
+      ms.setActionHandler("togglemicrophone", () => { calls.mic++; mic = !mic; ms.setMicrophoneActive(mic); });
+      ms.setActionHandler("togglecamera", () => { calls.cam++; cam = !cam; ms.setCameraActive(cam); });
+      ms.setActionHandler("hangup", () => calls.hang++);
     </script>`,
   "/art.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1" fill="#f80"/></svg>`,
 };
@@ -74,7 +91,7 @@ const server = createServer((req, res) => {
     });
     return res.end(WAV.subarray(start, end + 1));
   }
-  const body = PAGES[req.url];
+  const body = PAGES[req.url.split("?")[0]];
   if (!body) return res.writeHead(404).end();
   const type = req.url.endsWith(".svg") ? "image/svg+xml" : "text/html";
   res.writeHead(200, { "content-type": type }).end(body);
@@ -176,6 +193,7 @@ await step("volume slider sets element volume", async () => {
   await card.locator('input[aria-label="Volume"]').evaluate((input) => {
     input.value = "0.3";
     input.dispatchEvent(new Event("input"));
+    input.dispatchEvent(new Event("change"));
   });
   await until(() => audio(() => Math.abs(document.getElementById("a").volume - 0.3) < 0.01));
 });
@@ -202,6 +220,46 @@ await step("keyboard shortcut toggles the playing tab", async () => {
   await until(() => audio(() => calls.next === 2));
 });
 
+await step("chapters mark the seek bar and name the current chapter", async () => {
+  assert.equal(await card.locator(".marks span").count(), 2);
+  await card.locator(".chapter", { hasText: "Verse" }).waitFor({ timeout: 2000 });
+});
+
+await step("skip ad appears during an ad and calls the page's handler", async () => {
+  await audio(() => startAd());
+  await card.locator("button.skip-ad").click();
+  await until(() => audio(() => calls.skipad === 1));
+  await card.locator("button.rate").waitFor({ timeout: 2000 }); // speed is back after the ad
+});
+
+await step("hiding a card lasts until the tab plays again", async () => {
+  await card.locator("button.hide").click();
+  await until(async () => (await panel.locator(".card").count()) === 0);
+  await audio(() => document.getElementById("a").pause());
+  await panel.waitForTimeout(300); // let the pause reach the hub, or it coalesces with the play
+  await audio(() => document.getElementById("a").play());
+  await card.waitFor({ timeout: 4000 });
+});
+
+await step("settings page saves auto-pause", async () => {
+  const options = await ctx.newPage();
+  await options.goto(`chrome-extension://${extId}/options.html`);
+  await options.locator('input[name="autoPause"]').check();
+  await until(() => sw.evaluate(async () => (await chrome.storage.sync.get("settings")).settings?.autoPause === true));
+  await options.close();
+});
+
+await step("auto-pause stops the other tab when a new one plays with sound", async () => {
+  const second = await ctx.newPage();
+  await second.goto(`${base}/music.html?second`);
+  await second.evaluate(() => document.getElementById("a").play());
+  await until(() => audio(() => document.getElementById("a").paused));
+  await second.close();
+  await sw.evaluate(() => chrome.storage.sync.set({ settings: { autoPause: false } }));
+  await audio(() => document.getElementById("a").play());
+  await panel.bringToFront();
+});
+
 const video = await ctx.newPage();
 await video.goto(`${base}/video.html`);
 await video.evaluate(() => document.getElementById("v").play());
@@ -213,6 +271,10 @@ await step("second tab appears; live stream shows LIVE and disables seek", async
   assert.equal(await panel.locator(".card").count(), 2);
   await vcard.locator(".live", { hasText: "LIVE" }).waitFor({ timeout: 2000 });
   assert.equal(await vcard.locator('input[aria-label="Seek"]').isDisabled(), true);
+});
+
+await step("badge counts the tabs in Cue", async () => {
+  await until(async () => (await sw.evaluate(() => chrome.action.getBadgeText({}))) === "2");
 });
 
 await step("pause all pauses both tabs", async () => {
@@ -227,6 +289,22 @@ await step("picture-in-picture opens from the panel", async () => {
   await until(() => video.evaluate(() => !!document.pictureInPictureElement));
 });
 
+await step("call page shows mic, camera and hang-up instead of the transport", async () => {
+  const callPage = await ctx.newPage();
+  await callPage.goto(`${base}/call.html`);
+  await panel.bringToFront();
+  const ccard = panel.locator(".card").filter({ hasText: "Call page" });
+  await ccard.waitFor({ timeout: 4000 });
+  assert.equal(await ccard.locator("button.play").isVisible(), false);
+  await ccard.locator('button[aria-label="Mute microphone"]').click();
+  await ccard.locator('button[aria-label="Unmute microphone"]').waitFor({ timeout: 2000 });
+  await ccard.locator('button[aria-label="Turn camera off"]').click();
+  await ccard.locator('button[aria-label="Turn camera on"]').waitFor({ timeout: 2000 });
+  await ccard.locator('button[aria-label="Leave call"]').click();
+  await until(() => callPage.evaluate(() => calls.mic === 1 && calls.cam === 1 && calls.hang === 1));
+  await callPage.close();
+});
+
 await step("closing a tab removes its card", async () => {
   await video.close();
   await until(async () => (await panel.locator(".card").count()) === 1);
@@ -235,6 +313,11 @@ await step("closing a tab removes its card", async () => {
 await step("page reload clears the stale card", async () => {
   await music.reload();
   await until(async () => (await panel.locator(".card").count()) === 0);
+});
+
+await step("volume is remembered for the site after a reload", async () => {
+  await audio(() => document.getElementById("a").play());
+  await until(() => audio(() => Math.abs(document.getElementById("a").volume - 0.3) < 0.01));
 });
 
 await step("toolbar popup page has a fixed popup width", async () => {

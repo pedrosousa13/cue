@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Cue settings</title>
+    <link rel="stylesheet" href="panel.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <form id="form">
+      <label class="row">
+        <span>
+          <strong>Pause other tabs when one starts playing</strong>
+          <small>Only playback with sound counts, so muted previews do not stop your music.</small>
+        </span>
+        <input type="checkbox" name="autoPause" />
+      </label>
+      <label class="row">
+        <span>
+          <strong>Remember volume for each site</strong>
+          <small>Cue sets the volume you last chose when the site plays again.</small>
+        </span>
+        <input type="checkbox" name="rememberVolume" />
+      </label>
+      <label class="row">
+        <span>
+          <strong>Toolbar badge</strong>
+          <small>The number on the Cue icon.</small>
+        </span>
+        <select name="badge">
+          <option value="listed">Tabs in Cue</option>
+          <option value="playing">Tabs playing</option>
+          <option value="off">Off</option>
+        </select>
+      </label>
+      <div class="row">
+        <span>
+          <strong>Keyboard shortcuts</strong>
+          <small>Change keys, or set them to Global so they work when the browser is in the background.</small>
+        </span>
+        <button type="button" id="shortcuts">Edit</button>
+      </div>
+    </form>
+    <script src="settings.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

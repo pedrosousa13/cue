@@ -2,26 +2,40 @@
   "manifest_version": 3,
   "name": "Cue: Media Controls for Every Tab",
   "short_name": "Cue",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Control audio and video in every tab from the toolbar or the side panel.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "scripting", "sidePanel"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "storage",
+    "scripting",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["page.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "page.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true
     },
     {
-      "matches": ["<all_urls>"],
-      "js": ["relay.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "relay.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true
@@ -46,20 +60,32 @@
   },
   "commands": {
     "toggle-playback": {
-      "suggested_key": { "default": "Alt+Shift+P" },
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
       "description": "Play or pause"
     },
     "next-track": {
-      "suggested_key": { "default": "Alt+Shift+Period" },
+      "suggested_key": {
+        "default": "Alt+Shift+Period"
+      },
       "description": "Next track"
     },
     "previous-track": {
-      "suggested_key": { "default": "Alt+Shift+Comma" },
+      "suggested_key": {
+        "default": "Alt+Shift+Comma"
+      },
       "description": "Previous track"
     },
     "toggle-mute": {
-      "suggested_key": { "default": "Alt+Shift+M" },
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
       "description": "Mute or unmute the tab"
     }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
   }
 }

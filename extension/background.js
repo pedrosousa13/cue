@@ -5,10 +5,23 @@
 // being stopped, and so the panel can read it and subscribe to changes without
 // a message round trip.
 
-const tabs = new Map(); // tabId -> { tabId, windowId, title, favIconUrl, muted, lastActive, frames: { frameId: state } }
+importScripts("settings.js");
 
-const loaded = chrome.storage.session.get("tabs").then(({ tabs: saved }) => {
-  for (const entry of Object.values(saved || {})) tabs.set(entry.tabId, entry);
+// tabId -> { tabId, windowId, title, favIconUrl, muted, dismissed, lastActive, frames: { frameId: state } }
+const tabs = new Map();
+let settings = { ...CUE_DEFAULTS };
+
+const loaded = Promise.all([
+  chrome.storage.session.get("tabs").then(({ tabs: saved }) => {
+    for (const entry of Object.values(saved || {})) tabs.set(entry.tabId, entry);
+  }),
+  cueSettings().then((s) => (settings = s)),
+]);
+
+chrome.storage.sync.onChanged.addListener((changes) => {
+  if (!changes.settings) return;
+  settings = { ...CUE_DEFAULTS, ...changes.settings.newValue };
+  updateBadge();
 });
 
 let savePending = false;
@@ -47,6 +60,15 @@ function sanitize(s) {
     pip: bool(s.pip),
     volume: Math.min(1, Math.max(0, num(s.volume))),
     muted: bool(s.muted),
+    chapters: Array.isArray(s.chapters)
+      ? s.chapters
+          .filter((c) => c && typeof c === "object")
+          .slice(0, 100)
+          .map((c) => ({ title: str(c.title, 120), start: Math.max(0, num(c.start)) }))
+      : [],
+    inCall: bool(s.inCall),
+    mic: typeof s.mic === "boolean" ? s.mic : null,
+    camera: typeof s.camera === "boolean" ? s.camera : null,
     score: num(s.score),
     host: str(s.host, 255),
     at: num(s.at) || Date.now(),
@@ -62,9 +84,17 @@ const tabInfo = (tab) => ({
 
 // --- Tab bookkeeping ------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (!msg || msg.type !== "state" || !sender.tab || sender.tab.id < 0) return;
-  handleState(sender.tab, sender.frameId ?? 0, msg.state);
+  if (!msg) return;
+  if (msg.type === "state" && sender.tab && sender.tab.id >= 0) {
+    handleState(sender.tab, sender.frameId ?? 0, msg.state);
+  } else if (msg.type === "dismiss" && isOwnPage(sender) && Number.isInteger(msg.tabId)) {
+    dismiss(msg.tabId);
+  }
 });
+
+// Only Cue's own pages (popup, side panel, a Vivaldi web panel) may dismiss.
+// Content scripts share the extension id, so check the sending page's URL.
+const isOwnPage = (sender) => (sender.url || "").startsWith(chrome.runtime.getURL(""));
 
 async function handleState(tab, frameId, raw) {
   await loaded;
@@ -77,13 +107,50 @@ async function handleState(tab, frameId, raw) {
     return save();
   }
   if (!entry) {
-    entry = { tabId: tab.id, lastActive: 0, frames: {} };
+    entry = { tabId: tab.id, lastActive: 0, dismissed: false, frames: {} };
     tabs.set(tab.id, entry);
   }
+  const prev = entry.frames[frameId];
   Object.assign(entry, tabInfo(tab));
   entry.frames[frameId] = state;
-  if (state.playing) entry.lastActive = Date.now();
+
+  if (!prev || prev.host !== state.host) restoreVolume(tab.id, frameId, state);
+  if (state.playing) {
+    entry.lastActive = Date.now();
+    if (!prev || !prev.playing) {
+      entry.dismissed = false; // hiding a card means "not now", not "never"
+      if (settings.autoPause && !entry.muted && !state.muted && state.volume > 0) pauseOthers(tab.id);
+    }
+  }
   save();
+}
+
+// Only audible playback pauses other tabs, so a muted hover preview on a video
+// site does not stop your music.
+function pauseOthers(tabId) {
+  for (const entry of tabs.values()) {
+    if (entry.tabId === tabId) continue;
+    for (const [frameId, state] of Object.entries(entry.frames)) {
+      if (state.playing) sendCommand(entry.tabId, Number(frameId), "pause");
+    }
+  }
+}
+
+async function dismiss(tabId) {
+  await loaded;
+  const entry = tabs.get(tabId);
+  if (!entry) return;
+  entry.dismissed = true;
+  save();
+}
+
+async function restoreVolume(tabId, frameId, state) {
+  if (!settings.rememberVolume || !state.host) return;
+  const { volumes = {} } = await chrome.storage.local.get("volumes");
+  const saved = volumes[state.host];
+  if (typeof saved === "number" && Math.abs(saved - state.volume) > 0.01) {
+    sendCommand(tabId, frameId, "volume", saved);
+  }
 }
 
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
@@ -109,11 +176,13 @@ chrome.tabs.onReplaced.addListener((_added, removed) => forget(removed));
 
 // --- Badge ------------------------------------------------------------------
 function updateBadge() {
-  let playing = 0;
+  let count = 0;
   for (const entry of tabs.values()) {
-    if (Object.values(entry.frames).some((s) => s.playing)) playing++;
+    if (entry.dismissed) continue;
+    if (settings.badge === "listed" || Object.values(entry.frames).some((s) => s.playing)) count++;
   }
-  chrome.action.setBadgeText({ text: playing > 1 ? String(playing) : "" });
+  const text = settings.badge !== "off" && count > 0 ? String(count) : "";
+  chrome.action.setBadgeText({ text });
   chrome.action.setBadgeBackgroundColor({ color: "#3d5afe" });
 }
 
