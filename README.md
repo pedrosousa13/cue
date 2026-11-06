@@ -120,14 +120,14 @@ The tests include a YouTube Skip button with an unknown class name, to check the
 
 ## Privacy
 
-Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings and the volume you chose for each site. See [PRIVACY.md](PRIVACY.md).
+Cue collects no data. Its only network requests download artwork, without cookies. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings, the volume you chose for each site, and the popup's height. See [PRIVACY.md](PRIVACY.md).
 
 Cue asks for access to all sites because media can play on any site. It uses this access only to read playback state and to send the controls you click.
 
 ## Known limitations
 
 - **The clock depends on the site.** Cue uses the site's own clock when the site publishes one with `navigator.mediaSession.setPositionState()`. On YouTube and YouTube Music, Cue reads the track clock from YouTube's player, because one media element plays the whole autoplay queue. On other sites Cue uses the media element's clock. A different site that plays a queue through one element, and publishes no clock, can show the wrong time after autoplay. The YouTube support is tested against a page that imitates YouTube's player, not against YouTube itself.
-- **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. There is no other way for an extension to get a site's Media Session handlers. The wrappers call the original functions and return their results. A site that checks for modified built-in functions can detect them.
+- **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. There is no other way for an extension to get a site's Media Session handlers. The wrappers call the original functions, return their results, and keep the original names and lengths. A site that checks `toString()` can still detect them, and a site can see that Cue is installed and which version.
 - **Some audio is not detected.** Cue finds media when it plays, loads, or is in the page. When the browser marks a tab as playing sound and Cue knows nothing in it, Cue also searches open shadow roots. Cue cannot find media inside closed shadow roots, media that is never added to the page and starts without `play()`, or sound made only with the Web Audio API.
 - **Sites can override the volume.** Some players keep their own volume setting and can replace the volume that Cue sets. On YouTube, Cue sets the volume through YouTube's player, so YouTube keeps it.
 - **Skip ad, call controls, and chapters need site support.** These buttons appear only when the site registers the related Media Session handlers or chapter data. On YouTube, Cue finds ads and the Skip button from YouTube's player and page. If YouTube changes those, ad detection stops working until Cue is updated.
@@ -159,6 +159,7 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 - volume memory per site
 - the badge count
 - that slow artwork does not delay the popup
+- hostile pages: oversized fields cannot freeze Cue for other tabs, iframe floods are capped at 16 frames per tab, a page cannot catch the picture-in-picture click, pages without media send no messages, auto-pause's rate limit cannot be reset, no titles are written to disk, and artwork is fetched without cookies
 - safety checks: volume memory leaves muted media muted, a page cannot change the site name on its card or outrank other frames, a paused background element does not take the controls from media in the page, a frame that stops answering is removed, and hidden cards are not shortcut targets
 
 The tests use local test pages only. They do not use real sites.

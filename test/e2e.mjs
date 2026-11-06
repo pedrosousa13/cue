@@ -159,6 +159,22 @@ const PAGES = {
   "/article.html": `<!doctype html><title>Example News</title>
     <meta property="og:site_name" content="Example News">
     <article><h2>Storm hits the coast</h2><audio id="a" src="/tone.wav"></audio></article>`,
+  "/plain.html": `<!doctype html><title>Plain page</title><p>No media here.</p>
+    <script>for (let i = 0; i < 5; i++) document.body.append(document.createElement("iframe"));</script>`,
+  "/hostile.html": `<!doctype html><title>Hostile page</title><audio id="a" src="/tone.wav"></audio>`,
+  "/pip-hijack.html": `<!doctype html><title>Hijack page</title>
+    <canvas id="c" width="320" height="180"></canvas>
+    <video id="v" muted playsinline width="320" height="180"></video>
+    <script>
+      const c = document.getElementById("c"), g = c.getContext("2d");
+      setInterval(() => g.fillRect(0, 0, 320, 180), 50);
+      document.getElementById("v").srcObject = c.captureStream(20);
+      // Everything a page could try to catch Cue's click with.
+      window.hijacked = 0;
+      Object.defineProperty(window, Symbol.for("cue.pip"), { value: () => { hijacked++; window.open("about:blank"); }, configurable: true });
+      const real = HTMLVideoElement.prototype.requestPictureInPicture;
+      HTMLVideoElement.prototype.requestPictureInPicture = function () { hijacked++; return real.call(this); };
+    </script>`,
   "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
   "/nopip.html": `<!doctype html><title>No PiP page</title>
     <canvas id="c" width="320" height="180"></canvas>
@@ -179,7 +195,13 @@ const PAGES = {
 };
 
 const WAV = tone(180);
+let artCookies = []; // Cookie headers seen on artwork requests
 const server = createServer((req, res) => {
+  // Only Cue's requests (a fetch, so mode "cors"): Chrome itself also loads
+  // Media Session artwork for the page, as an image with the page's cookies.
+  if (req.url === "/art.svg" && req.headers["sec-fetch-mode"] === "cors") {
+    artCookies.push(req.headers.cookie || "");
+  }
   if (req.url === "/tone.wav") {
     // Media elements need byte ranges to learn the duration and to seek.
     const range = /bytes=(\d+)-(\d*)/.exec(req.headers.range || "");
@@ -260,7 +282,7 @@ const audio = (fn) => music.evaluate(fn);
 await step("shows the playing tab with mediaSession metadata", async () => {
   await card.locator(".title", { hasText: "Track One" }).waitFor({ timeout: 4000 });
   assert.match(await card.locator(".artist").textContent(), /Test Artist · Test Album/);
-  assert.match(await card.locator(".art img").getAttribute("src"), /\/art\.svg$/);
+  assert.match(await card.locator(".art img").getAttribute("data-src"), /\/art\.svg$/);
 });
 
 await step("clock advances without any page round trip", async () => {
@@ -424,9 +446,16 @@ await step("closing a tab removes its card", async () => {
   await until(async () => (await panel.locator(".card").count()) === 1);
 });
 
-await step("page reload clears the stale card", async () => {
+await step("page reload replaces the stale playing card", async () => {
   await music.reload();
-  await until(async () => (await panel.locator(".card").count()) === 0);
+  // The new page's player is paused at 0:00: the card is either gone or shows
+  // that, never the old page's "playing" state.
+  await until(async () => {
+    const cards = panel.locator(".card");
+    if ((await cards.count()) === 0) return true;
+    const c = cards.first();
+    return (await c.locator('button.play[aria-label="Play"]').count()) === 1 && (await c.locator(".current").textContent()) === "0:00";
+  });
 });
 
 await step("volume is remembered for the site after a reload", async () => {
@@ -447,9 +476,9 @@ await step("slow artwork does not delay the popup", async () => {
   // The browser shows a popup at its load event. It must not wait for art.
   const loadMs = await popup.evaluate(() => performance.getEntriesByType("navigation")[0].loadEventEnd);
   assert.ok(loadMs < 1000, `load took ${Math.round(loadMs)}ms`);
-  // The cached card is drawn before live state arrives, and art still loads.
+  // The card appears, and the art still loads once the popup is open.
   await popup.locator(".card").filter({ hasText: "Slow Artist" }).waitFor({ timeout: 1000 });
-  await until(() => popup.evaluate(() => [...document.querySelectorAll(".art img")].some((i) => i.src.endsWith("/slow-art.svg") && i.complete && i.naturalWidth > 0)), 6000);
+  await until(() => popup.evaluate(() => [...document.querySelectorAll(".art img")].some((i) => (i.dataset.src || "").endsWith("/slow-art.svg") && i.src.startsWith("blob:") && i.complete && i.naturalWidth > 0)), 6000);
   await popup.close();
   await slow.close();
 });
@@ -577,7 +606,7 @@ await step("Reddit post: title and subreddit from the post, art from the poster"
   const c = panel.locator(".card").filter({ hasText: "Cat does a perfect backflip" });
   await c.waitFor({ timeout: 4000 });
   assert.match(await c.locator(".artist").textContent(), /r\/aww/);
-  assert.match(await c.locator(".art img").getAttribute("src"), /\/art\.svg$/);
+  assert.match(await c.locator(".art img").getAttribute("data-src"), /\/art\.svg$/);
   await page.close();
 });
 
@@ -600,6 +629,141 @@ await step("article page: title from the article heading, site from og:site_name
   const c = panel.locator(".card").filter({ hasText: "Storm hits the coast" });
   await c.waitFor({ timeout: 4000 });
   assert.match(await c.locator(".artist").textContent(), /Example News/);
+  await page.close();
+});
+
+// --- Hostile pages -------------------------------------------------------------
+const forge = (state) =>
+  window.dispatchEvent(new CustomEvent("cue:state", { detail: JSON.stringify(state) }));
+const fake = (extra = {}) => ({
+  playing: true, advancing: true, position: 1, duration: 60, rate: 1, title: "Forged", artist: "Forger",
+  actions: [], volume: 1, score: 1, at: Date.now(), ...extra,
+});
+
+await step("oversized fields from a page cannot freeze Cue for other tabs", async () => {
+  const victim = await ctx.newPage();
+  await victim.goto(`${base}/music.html?victim`);
+  await victim.evaluate(() => document.getElementById("a").play());
+  const bad = await ctx.newPage();
+  await bad.goto(`${base}/hostile.html`);
+  await bad.evaluate(`(${forge})(${JSON.stringify(fake())} )`);
+  await bad.evaluate((big) => {
+    const s = { playing: true, advancing: true, position: 1, duration: 60, rate: 1, title: "Forged", artist: "Forger",
+      actions: Array.from({ length: 20 }, () => big), volume: 1, score: 1, at: Date.now() };
+    window.dispatchEvent(new CustomEvent("cue:state", { detail: JSON.stringify(s) }));
+  }, "x".repeat(1_000_000));
+  await panel.bringToFront();
+  await panel.waitForTimeout(600);
+  // The other tab still updates: pause it and the stored state must follow.
+  await victim.evaluate(() => document.getElementById("a").pause());
+  await until(() =>
+    sw.evaluate(async (url) => {
+      const [tab] = await chrome.tabs.query({ url });
+      const { tabs: stored } = await chrome.storage.session.get("tabs");
+      const entry = stored[tab.id];
+      return !!entry && Object.values(entry.frames).every((f) => !f.playing);
+    }, `${base}/music.html?victim`), 4000);
+  const longest = await sw.evaluate(async () => {
+    const { tabs } = await chrome.storage.session.get("tabs");
+    return Math.max(0, ...Object.values(tabs).flatMap((t) => Object.values(t.frames).flatMap((f) => f.actions.map((a) => a.length))));
+  });
+  assert.ok(longest < 64, `stored action of ${longest} chars`);
+  await bad.close();
+  await victim.close();
+});
+
+await step("an iframe flood is capped at 16 frames per tab", async () => {
+  const bad = await ctx.newPage();
+  await bad.goto(`${base}/hostile.html`);
+  await bad.evaluate(async (state) => {
+    for (let i = 0; i < 30; i++) {
+      const f = document.createElement("iframe");
+      document.body.append(f);
+      await new Promise((r) => setTimeout(r, 30));
+      f.contentWindow.dispatchEvent(new CustomEvent("cue:state", { detail: JSON.stringify(state) }));
+    }
+  }, fake());
+  await panel.waitForTimeout(800);
+  const frames = await sw.evaluate(async (url) => {
+    const [tab] = await chrome.tabs.query({ url });
+    return Object.keys(tabs.get(tab.id)?.frames || {}).length;
+  }, `${base}/hostile.html`);
+  assert.ok(frames > 0 && frames <= 16, `${frames} frames stored`);
+  await bad.close();
+});
+
+await step("a page cannot catch the picture-in-picture click", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/pip-hijack.html`);
+  await page.evaluate(() => document.getElementById("v").play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Hijack page" });
+  await c.waitFor({ timeout: 4000 });
+  await c.locator('button[aria-label="Picture in picture"]').click();
+  await until(() => page.evaluate(() => !!document.pictureInPictureElement));
+  assert.equal(await page.evaluate(() => hijacked), 0);
+  await page.close();
+});
+
+await step("pages without media send no messages", async () => {
+  await sw.evaluate(() => {
+    self.__fromPlain = 0;
+    chrome.runtime.onMessage.addListener((_m, sender) => {
+      if ((sender.url || "").includes("/plain.html")) self.__fromPlain++;
+    });
+  });
+  const page = await ctx.newPage();
+  await page.goto(`${base}/plain.html`);
+  await page.waitForTimeout(500);
+  await page.goto(`${base}/hostile.html`); // navigate away: pagehide in every frame
+  await page.waitForTimeout(500);
+  assert.equal(await sw.evaluate(() => self.__fromPlain), 0);
+  await page.close();
+});
+
+await step("auto-pause's 2-second limit cannot be reset by a page", async () => {
+  await sw.evaluate(() => chrome.storage.sync.set({ settings: { autoPause: true } }));
+  const victim = await ctx.newPage();
+  await victim.goto(`${base}/music.html?victim2`);
+  await victim.evaluate(() => {
+    const a = document.getElementById("a");
+    window.pauses = 0;
+    a.addEventListener("pause", () => { pauses++; a.play(); });
+    return a.play();
+  });
+  await victim.waitForTimeout(500);
+  const bad = await ctx.newPage();
+  await bad.goto(`${base}/hostile.html`);
+  await bad.evaluate(async (state) => {
+    for (let i = 0; i < 10; i++) {
+      window.dispatchEvent(new CustomEvent("cue:state", { detail: JSON.stringify(i % 2 ? null : { ...state, at: Date.now() }) }));
+      await new Promise((r) => setTimeout(r, 220));
+    }
+  }, fake());
+  await victim.waitForTimeout(300);
+  const pauses = await victim.evaluate(() => pauses);
+  await sw.evaluate(() => chrome.storage.sync.set({ settings: { autoPause: false } }));
+  assert.ok(pauses <= 2, `victim paused ${pauses} times in about 2 s`);
+  await bad.close();
+  await victim.close();
+});
+
+await step("the popup cache keeps no titles on disk", async () => {
+  const stored = await panel.evaluate(() => JSON.stringify({ ...localStorage }));
+  assert.ok(!/Track|Artist|Forged/.test(stored), stored.slice(0, 120));
+});
+
+await step("artwork is fetched without the site's cookies", async () => {
+  await ctx.addCookies([{ name: "session", value: "secret", url: base }]);
+  artCookies = [];
+  const page = await ctx.newPage();
+  await page.goto(`${base}/music.html?cookies`);
+  await page.evaluate(() => document.getElementById("a").play());
+  const popup = await ctx.newPage();
+  await popup.goto(`chrome-extension://${extId}/popup.html`);
+  await until(() => artCookies.length > 0, 4000);
+  assert.ok(artCookies.every((c) => !c.includes("secret")), `cookie sent: ${artCookies.join(" | ")}`);
+  await popup.close();
   await page.close();
 });
 

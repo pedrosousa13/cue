@@ -13,14 +13,17 @@ let settings = { ...CUE_DEFAULTS };
 
 let settingsChanged = false;
 const removedTabs = new Set(); // late messages must not bring a closed tab back
+const autoPausedAt = new Map(); // tabId -> time; outlives the tab entry, so null/playing toggles cannot reset it
+const MAX_FRAMES = 16; // per tab: a page cannot fill storage with iframes
 
 // A failed read must not leave every handler waiting forever: fall back to
 // empty state and default settings.
 const loaded = Promise.all([
   chrome.storage.session
-    .get("tabs")
-    .then(({ tabs: saved }) => {
+    .get(["tabs", "removedTabs"])
+    .then(({ tabs: saved, removedTabs: removed }) => {
       for (const entry of Object.values(saved || {})) tabs.set(entry.tabId, entry);
+      for (const id of removed || []) removedTabs.add(id);
     })
     .catch(() => {}),
   cueSettings()
@@ -37,23 +40,41 @@ chrome.storage.sync.onChanged.addListener((changes) => {
   updateBadge();
 });
 
+// Writes are batched: at most one every 250 ms, however many states arrive.
 let savePending = false;
 function save() {
   if (savePending) return;
   savePending = true;
-  setTimeout(() => {
+  setTimeout(async () => {
     savePending = false;
-    chrome.storage.session
-      .set({ tabs: Object.fromEntries(tabs) })
-      .catch((e) => console.warn("Cue: could not save media state", e));
+    const removed = [...removedTabs].slice(-200);
+    try {
+      await chrome.storage.session.set({ tabs: Object.fromEntries(tabs), removedTabs: removed });
+    } catch (e) {
+      // Over quota: drop inline artwork and chapters, which are the large
+      // parts, and keep playback state working.
+      console.warn("Cue: could not save media state; dropping inline artwork", e);
+      for (const entry of tabs.values()) {
+        for (const state of Object.values(entry.frames)) {
+          if (state.artwork.startsWith("data:")) state.artwork = "";
+          state.chapters = [];
+        }
+      }
+      await chrome.storage.session.set({ tabs: Object.fromEntries(tabs), removedTabs: removed }).catch(() => {});
+    }
     updateBadge();
-  }, 0);
+  }, 250);
 }
 
 // --- Input validation ---------------------------------------------------------
 // State comes from page.js, which runs in the page's world, so a page can send
 // anything. Keep only known fields with the expected types.
 const str = (v, max = 300) => (typeof v === "string" ? v.slice(0, max) : "");
+const ACTIONS = new Set([
+  "play", "pause", "stop", "seekbackward", "seekforward", "seekto", "previoustrack", "nexttrack",
+  "skipad", "togglemicrophone", "togglecamera", "hangup", "previousslide", "nextslide",
+  "togglescreenshare", "voiceactivity", "enterpictureinpicture",
+]);
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const bool = (v) => v === true;
 
@@ -75,7 +96,9 @@ function sanitize(s) {
     artist: str(s.artist),
     album: str(s.album),
     artwork: /^(https?:|data:image\/)/.test(artwork) ? artwork : "",
-    actions: Array.isArray(s.actions) ? s.actions.filter((a) => typeof a === "string").slice(0, 20) : [],
+    // Only real Media Session action names: a page could otherwise send huge
+    // strings and fill session storage for every tab.
+    actions: Array.isArray(s.actions) ? [...new Set(s.actions.filter((a) => ACTIONS.has(a)))] : [],
     video: bool(s.video),
     pip: bool(s.pip),
     volume: Math.min(1, Math.max(0, num(s.volume))),
@@ -160,6 +183,7 @@ async function handleState(sender, raw) {
     tabs.set(tab.id, entry);
   }
   const prev = entry.frames[frameId];
+  if (!prev && Object.keys(entry.frames).length >= MAX_FRAMES) return;
   Object.assign(entry, tabInfo(tab));
   entry.frames[frameId] = state;
 
@@ -171,8 +195,8 @@ async function handleState(sender, raw) {
       // At most once every 2 s per tab, so a page that toggles playback in a
       // loop cannot keep pausing everything else.
       const now = Date.now();
-      if (settings.autoPause && !entry.muted && !state.muted && state.volume > 0 && now - (entry.autoPausedAt || 0) > 2000) {
-        entry.autoPausedAt = now;
+      if (settings.autoPause && !entry.muted && !state.muted && state.volume > 0 && now - (autoPausedAt.get(tab.id) || 0) > 2000) {
+        autoPausedAt.set(tab.id, now);
         pauseOthers(tab.id);
       }
     }
@@ -231,9 +255,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   }
   save();
 });
+// (Chrome does not support event filters on tabs.onUpdated, so the listener
+// returns early for changes it does not use.)
 
 const forget = async (tabId) => {
   removedTabs.add(tabId);
+  autoPausedAt.delete(tabId);
   await loaded;
   if (tabs.delete(tabId)) save();
 };
@@ -316,7 +343,9 @@ chrome.commands.onCommand.addListener(runCommand);
 // --- Install ------------------------------------------------------------------
 // Content scripts only reach pages loaded after install. Inject into tabs that
 // are already open so they show up without a reload.
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async ({ reason }) => {
+  // Not on browser updates: re-injecting into every tab then is wasted work.
+  if (reason !== "install" && reason !== "update") return;
   const open = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
   for (const tab of open) {
     const target = { tabId: tab.id, allFrames: true };

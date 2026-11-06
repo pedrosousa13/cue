@@ -51,7 +51,7 @@ FAST AND LIGHT
 Cue does not poll your tabs. Pages report only when playback changes, and the panel keeps the clock itself. The popup opens without waiting for artwork to download.
 
 PRIVATE
-Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Your settings and per-site volumes are stored in your browser only.
+Cue collects no data. Its only network requests download artwork, without cookies. Playback state stays in your browser and is deleted when the browser closes. Your settings and per-site volumes are stored in your browser only.
 
 WHY CUE NEEDS ACCESS TO ALL SITES
 Media can play on any site. Cue uses this access only to read what is playing and to send the controls that you click.

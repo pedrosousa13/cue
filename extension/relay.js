@@ -14,13 +14,42 @@
     }
   };
 
-  const send = (state) => {
+  const post = (state) => {
     try {
       chrome.runtime.sendMessage({ type: "state", state }).catch(() => {});
     } catch {
       // The extension was reloaded and this copy is orphaned. The new copy
       // takes over; nothing to do here.
     }
+  };
+
+  // At most one message per 200 ms per frame; the latest state wins. A page
+  // can dispatch cue:state itself, so this limit is what protects the
+  // service worker, not page.js's own coalescing.
+  const INTERVAL = 200;
+  let reported = false; // has this frame ever sent a state?
+  let pending; // undefined: nothing waiting
+  let lastSent = 0;
+  let timer = 0;
+
+  const flush = () => {
+    timer = 0;
+    lastSent = Date.now();
+    const state = pending;
+    pending = undefined;
+    // A frame with no media never wakes the service worker: "nothing here"
+    // is only worth sending after something was reported.
+    if (state === null && !reported) return;
+    reported = state !== null;
+    post(state);
+  };
+
+  const send = (state) => {
+    pending = state;
+    if (timer) return;
+    const wait = INTERVAL - (Date.now() - lastSent);
+    if (wait <= 0) flush();
+    else timer = setTimeout(flush, wait);
   };
 
   const command = (detail) =>
@@ -44,7 +73,12 @@
 
   // Leaving the page (or entering the back/forward cache) removes this frame
   // from the hub; coming back from the cache reports it again.
-  window.addEventListener("pagehide", () => send(null));
+  window.addEventListener("pagehide", () => {
+    // Send now: the page may be gone before a timer fires.
+    clearTimeout(timer);
+    pending = null;
+    flush();
+  });
   window.addEventListener("pageshow", (e) => e.persisted && command({ action: "report" }));
 
   // When injected into an already-open tab, ask page.js for its current state.

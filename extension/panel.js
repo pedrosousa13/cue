@@ -115,13 +115,30 @@ const command = (item, action, value) =>
     );
 
 // Goes through chrome.scripting rather than a message: the injected call keeps
-// this click's user gesture, which picture-in-picture requires.
+// this click's user gesture, which picture-in-picture requires. It runs in the
+// isolated world and calls nothing the page defines: in the page's world, a
+// page could replace the function and receive the click's gesture itself.
 const togglePip = (item) =>
   chrome.scripting
     .executeScript({
       target: { tabId: item.tabId, frameIds: [item.frameId] },
-      world: "MAIN",
-      func: () => window[Symbol.for("cue.pip")]?.() ?? false,
+      world: "ISOLATED",
+      func: () => {
+        if (document.pictureInPictureElement) return document.exitPictureInPicture().then(() => true, () => false);
+        const videos = [];
+        const walk = (root) => {
+          for (const node of root.querySelectorAll("*")) {
+            if (node instanceof HTMLVideoElement) videos.push(node);
+            if (node.shadowRoot) walk(node.shadowRoot);
+          }
+        };
+        walk(document);
+        const video = videos
+          .filter((v) => v.videoWidth > 0 && !v.disablePictureInPicture)
+          .sort((a, b) => b.paused - a.paused || b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight)
+          .pop();
+        return video ? video.requestPictureInPicture().then(() => true, () => false) : false;
+      },
     })
     .catch(() => {});
 
@@ -134,15 +151,43 @@ const focusTab = async (item) => {
 // count. Artwork and favicons come from the network, so setting them before
 // load would hold the popup closed until every thumbnail arrived. Until load,
 // images are only recorded; they are fetched once the popup is on screen.
+//
+// Network images are fetched without cookies and without a referrer, then
+// shown from a blob: an <img> in an extension page could otherwise send the
+// user's cookies for that site with a URL the page chose.
+const blobs = new Map(); // url -> object URL, for this panel's lifetime
+async function load(img, src) {
+  let url = src;
+  if (/^https?:/.test(src)) {
+    url = blobs.get(src);
+    if (!url) {
+      try {
+        const res = await fetch(src, { credentials: "omit", referrerPolicy: "no-referrer" });
+        if (!res.ok) return;
+        url = URL.createObjectURL(await res.blob());
+      } catch {
+        return;
+      }
+      blobs.set(src, url);
+      if (blobs.size > 60) {
+        const [oldest, oldUrl] = blobs.entries().next().value;
+        blobs.delete(oldest);
+        URL.revokeObjectURL(oldUrl);
+      }
+    }
+  }
+  if (img.dataset.src === src) img.src = url; // still wanted
+}
+
 const deferredImages = new Set();
 function setImage(img, src) {
   if (img.dataset.src === src) return;
   img.dataset.src = src;
-  if (document.readyState === "complete") img.src = src;
+  if (document.readyState === "complete") load(img, src);
   else deferredImages.add(img);
 }
 addEventListener("load", () => {
-  for (const img of deferredImages) img.src = img.dataset.src;
+  for (const img of deferredImages) load(img, img.dataset.src);
   deferredImages.clear();
 });
 
@@ -388,17 +433,12 @@ function bestFrame(entry) {
   return best;
 }
 
-// The last list, kept so the next popup can draw it synchronously: the popup
-// then opens at its final size instead of empty and growing. It is replaced
-// by live state a few milliseconds later.
-const CACHE = "cue:tabs";
+// The list's last height, so the next popup opens at its final size instead
+// of empty and growing. Only a number: titles and sites are never written to
+// disk, and PRIVACY.md says so.
+const HEIGHT = "cue:height";
 
-function update(tabs = {}, fromCache = false) {
-  if (!fromCache) {
-    try {
-      localStorage.setItem(CACHE, JSON.stringify(tabs));
-    } catch {}
-  }
+function update(tabs = {}) {
   items = Object.values(tabs)
     .map((entry) => {
       const frame = bestFrame(entry);
@@ -417,8 +457,13 @@ function render() {
       card = createCard();
       cards.set(item.tabId, card);
     }
+    // Repaint only cards whose state changed.
+    const key = JSON.stringify(item);
     card.item = item;
-    paint(card);
+    if (card.key !== key) {
+      card.key = key;
+      paint(card);
+    }
     seen.add(item.tabId);
     if (listEl.children[i] !== card.root) listEl.insertBefore(card.root, listEl.children[i] || null);
   });
@@ -430,6 +475,10 @@ function render() {
   }
   emptyEl.hidden = items.length > 0;
   pauseAllEl.hidden = items.filter((i) => i.state.playing).length < 2;
+  listEl.style.minHeight = "";
+  try {
+    localStorage.setItem(HEIGHT, String(listEl.offsetHeight));
+  } catch {}
   syncTicker();
 }
 
@@ -438,7 +487,7 @@ let ticker = 0;
 function syncTicker() {
   // Live cards tick too: the gap behind live grows while paused.
   const needed = !document.hidden && items.some((i) => i.state.playing || (i.state.live && i.state.canGoLive));
-  if (needed && !ticker) ticker = setInterval(() => cards.forEach(tick), 250);
+  if (needed && !ticker) ticker = setInterval(() => cards.forEach(tick), 500);
   if (!needed && ticker) {
     clearInterval(ticker);
     ticker = 0;
@@ -458,8 +507,12 @@ const theme = new URLSearchParams(location.search).get("theme");
 if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
 
 try {
-  const cached = JSON.parse(localStorage.getItem(CACHE));
-  if (cached) update(cached, true);
+  localStorage.removeItem("cue:tabs"); // 0.4 cached titles here; remove them
+  const height = Number(localStorage.getItem(HEIGHT));
+  if (height > 0) {
+    listEl.style.minHeight = `${height}px`;
+    emptyEl.hidden = true;
+  }
 } catch {}
 chrome.storage.session.get("tabs").then(({ tabs }) => update(tabs));
 chrome.storage.session.onChanged.addListener((changes) => {

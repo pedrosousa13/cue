@@ -14,12 +14,15 @@ To show and control media, Cue reads this information from tabs that play audio 
 
 This information stays in your browser. Cue keeps it in `chrome.storage.session`, which the browser deletes when it closes.
 
-Cue also stores two things that last after the browser closes:
+Cue also stores three things that last after the browser closes:
 
 - **Your settings**, in `chrome.storage.sync`. If you turn on browser sync, your browser syncs them to your other devices.
 - **The volume you chose for each site**, as a site host name and a number, in `chrome.storage.local`. This data does not leave your device. Turn off "Remember volume for each site" to stop this.
+- **The height of the popup's list**, as one number, so the popup opens at the right size. No titles, sites, or other playback details are written to disk.
 
-Cue does not send any of this to a server. Cue makes no network requests of its own. The artwork image loads from the address that the site published, as it does on that site, with no referrer. Cue loads plain-http artwork only from the site's own host.
+In private (incognito) windows, if you allow Cue there, Cue runs separately: private tabs never appear in Cue in normal windows, and their state is kept apart.
+
+Cue does not send any of this to a server. The only network requests Cue makes are for artwork images: Cue downloads the image at the address that the site published, without cookies and without a referrer. Cue loads plain-http artwork only from the site's own host.
 
 ## Permissions
 

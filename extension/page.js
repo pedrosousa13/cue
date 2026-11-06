@@ -6,7 +6,7 @@
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
   // Keep equal to manifest.json "version"; npm test checks it.
-  const VERSION = "0.4.2";
+  const VERSION = "0.5.0";
   const INSTALLED = Symbol.for("cue.installed");
   if (window[INSTALLED] === VERSION) return; // already running in this frame
   // An older copy is still here after an extension update. Tell it to stop
@@ -49,23 +49,33 @@
   // Chrome's own media hub calls the page's action handlers directly. Wrapping
   // setActionHandler gives this extension the same handlers, so next/previous
   // work on any site that supports media keys, with no per-site selectors.
+  // Wrappers keep the native function's name and length, so a site that
+  // inspects them sees what it expects. (toString() still differs; see README.)
+  const like = (wrapper, original, name = original.name) => {
+    try {
+      Object.defineProperty(wrapper, "name", { value: name });
+      Object.defineProperty(wrapper, "length", { value: original.length });
+    } catch {}
+    return wrapper;
+  };
+
   const proto = window.MediaSession && MediaSession.prototype;
   if (proto) {
     const setActionHandler = proto.setActionHandler;
-    proto.setActionHandler = function (action, handler) {
+    proto.setActionHandler = like(function (action, handler) {
       const result = setActionHandler.call(this, action, handler); // throws first on bad input
       if (typeof handler === "function") handlers.set(action, handler);
       else handlers.delete(action);
       schedule();
       return result;
-    };
+    }, setActionHandler);
 
     // When a site publishes its own clock, it wins over the media element. Some
     // players (YouTube's autoplay queue, for one) stream several tracks through
     // one element, so the element's time covers the whole queue, not the track.
     const setPositionState = proto.setPositionState;
     if (setPositionState) {
-      proto.setPositionState = function (state) {
+      proto.setPositionState = like(function (state) {
         const result = setPositionState.call(this, state);
         // duration Infinity is how a site says "live".
         siteSaysLive = !!state && state.duration === Infinity;
@@ -80,18 +90,18 @@
             : null;
         schedule();
         return result;
-      };
+      }, setPositionState);
     }
 
     for (const [method, key] of [["setMicrophoneActive", "mic"], ["setCameraActive", "camera"]]) {
       const original = proto[method];
       if (!original) continue;
-      proto[method] = function (active) {
+      proto[method] = like(function (active) {
         const result = original.call(this, active);
         call[key] = !!active;
         schedule();
         return result;
-      };
+      }, original);
     }
 
     for (const prop of ["metadata", "playbackState"]) {
@@ -99,10 +109,10 @@
       if (!desc || !desc.set) continue;
       Object.defineProperty(proto, prop, {
         ...desc,
-        set(value) {
+        set: like(function (value) {
           desc.set.call(this, value);
           schedule();
-        },
+        }, desc.set),
       });
     }
   }
@@ -135,10 +145,12 @@
   };
 
   const play = HTMLMediaElement.prototype.play;
-  HTMLMediaElement.prototype.play = function () {
-    watch(this);
+  HTMLMediaElement.prototype.play = like(function () {
+    // Only real media elements: anything else gets the native error from
+    // play itself, unchanged.
+    if (this instanceof HTMLMediaElement) watch(this);
     return play.apply(this, arguments);
-  };
+  }, play);
 
   for (const type of ["play", "loadedmetadata"]) {
     window.addEventListener(
@@ -168,6 +180,9 @@
       if (node.shadowRoot) deepScan(node.shadowRoot);
     }
   };
+  // Web Audio pages (games, voice apps) flip "audible" often and have no
+  // element to find. Walk the DOM at most once a minute.
+  let lastDeepScan = 0;
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", scan, { once: true });
   } else {
@@ -302,10 +317,10 @@
     }
     if (!info.title) info.title = el.getAttribute("aria-label") || el.title || "";
     if (!info.title) {
-      const og = document.querySelector('meta[property="og:title"]');
+      const og = document.head && document.head.querySelector('meta[property="og:title"]');
       info.title = (og && og.content) || "";
     }
-    const site = document.querySelector('meta[property="og:site_name"]');
+    const site = document.head && document.head.querySelector('meta[property="og:site_name"]');
     info.site = (site && site.content) || "";
     return info;
   };
@@ -447,7 +462,7 @@
           ? text(md.artist)
           : text(context && (context.artist || context.site)),
       album: text(md && md.album),
-      artwork: (md && artworkUrl(md.artwork)) || (context ? artworkUrl([{ src: context.artwork }]) : ""),
+      artwork: (md && artworkUrl(md.artwork)) || (context && context.artwork ? artworkUrl([{ src: context.artwork }]) : ""),
       actions,
       // Respect a site that turns picture-in-picture off for its video.
       video: el instanceof HTMLVideoElement && el.videoWidth > 0 && !el.disablePictureInPicture,
@@ -479,7 +494,10 @@
     timer = 0;
     if (retired) return;
     const state = snapshot();
-    if (!force && (state ? last && unchanged(state, last) : !last)) return;
+    // Nothing to report and nothing reported before: stay silent, even when
+    // asked. Pages without media must not cost a message.
+    if (!state && !last) return;
+    if (!force && state && last && unchanged(state, last)) return;
     last = state;
     window.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: JSON.stringify(state) }));
   }
@@ -536,15 +554,10 @@
     }
   };
 
-  // Picture-in-picture needs a user gesture. The panel calls this through
-  // chrome.scripting, which carries the click's gesture into the page; a plain
-  // message would not.
-  try {
-    Object.defineProperty(window, Symbol.for("cue.pip"), {
-      value: () => togglePip(primary()?.el),
-      configurable: true, // so a newer copy can replace it after an update
-    });
-  } catch {}
+  // Picture-in-picture from the panel does not come through here: panel.js
+  // runs its own code in the isolated world, where the page cannot replace
+  // what gets called with the user's click. This copy serves the "pip"
+  // command only.
 
   window.addEventListener(COMMAND_EVENT, (e) => {
     if (retired) return;
@@ -557,6 +570,8 @@
     const { action, value } = cmd || {};
     if (action === "report") return emit(true);
     if (action === "scan") {
+      if (Date.now() - lastDeepScan < 60000) return;
+      lastDeepScan = Date.now();
       deepScan(document);
       return schedule();
     }
