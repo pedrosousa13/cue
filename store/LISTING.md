@@ -22,6 +22,8 @@ Run `npm run package` and upload `cue.zip`.
 
 **Small promo tile** (440×280): `store/promo-small.png`
 
+**Marquee promo tile** (1400×560): `store/promo-marquee.png`
+
 **Homepage URL:** https://github.com/pedrosousa13/cue
 
 **Support URL:** https://github.com/pedrosousa13/cue/issues

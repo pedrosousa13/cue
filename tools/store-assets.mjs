@@ -86,7 +86,7 @@ const play = async (host, path, setup) => {
   return p;
 };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-await play("radio.example", "/live.html", async () => { const a = document.getElementById("a"); a.loop = true; a.currentTime = 237; await a.play(); });
+await play("radio.example", "/live.html", async () => { const a = document.getElementById("a"); a.currentTime = 195; await a.play(); });
 const pod = await play("podcasts.example", "/podcast.html", async () => { const a = document.getElementById("a"); a.currentTime = 52; await a.play(); a.pause(); });
 await play("music.example", "/song.html", async () => { const a = document.getElementById("a"); a.currentTime = 74; await a.play(); });
 await wait(1500);
@@ -158,6 +158,25 @@ await stage.setContent(`<!doctype html><body style="margin:0;width:440px;height:
   <div style="font-size:17px;line-height:1.35;opacity:.9;margin-top:4px">Media controls for every tab</div></div></body>`);
 await stage.screenshot({ path: OUT + "promo-small.png", scale: "css" });
 console.log("store/promo-small.png");
+
+// Marquee promo tile (1400x560): brand on the left, the real panel on the right.
+await stage.setViewportSize({ width: 1400, height: 560 });
+await stage.setContent(`<!doctype html><body style="margin:0;width:1400px;height:560px;overflow:hidden;
+  background:linear-gradient(135deg,#3d5afe,#7b2ff7);font-family:system-ui,-apple-system,sans-serif;color:#fff;
+  display:flex;align-items:center;padding:0 110px;box-sizing:border-box;gap:90px">
+  <div style="flex:1">
+    <div style="display:flex;align-items:center;gap:22px">
+      <div style="width:88px;height:88px;filter:drop-shadow(0 10px 24px rgba(0,0,0,.25))">${icon.replace('fill="#3d5afe"', 'fill="#ffffff26"')}</div>
+      <div style="font-size:64px;font-weight:700;letter-spacing:-.02em">Cue</div>
+    </div>
+    <div style="font-size:40px;font-weight:650;line-height:1.15;margin-top:34px;letter-spacing:-.01em">Media controls for every tab</div>
+    <div style="font-size:21px;line-height:1.45;margin-top:16px;opacity:.85">Music, videos, live streams and calls.<br>Fast, private, and open source.</div>
+  </div>
+  <img src="data:image/png;base64,${dark}" style="width:420px;margin-top:150px;border-radius:18px;box-shadow:0 30px 80px rgba(0,0,0,.35)">
+</body>`);
+await stage.waitForTimeout(200);
+await stage.screenshot({ path: OUT + "promo-marquee.png", scale: "css" });
+console.log("store/promo-marquee.png");
 
 await ctx.close();
 server.close();
