@@ -67,6 +67,39 @@ The popup draws the last known list immediately and loads artwork after it opens
 
 The page script also records the handlers that the site registers with `navigator.mediaSession`. That is how next and previous work on any site, and why Cue can use the site's own clock when the site publishes one. Some players, for example YouTube's autoplay queue, put several tracks into one media element. For those players the element's clock is wrong, and the site's clock is correct.
 
+## Compared with other options
+
+Checked in November 2026. The table lists only features that each project documents or that its code shows. "Not listed" means the project does not document the feature; it does not prove that the feature is missing.
+
+| | Cue | Chrome and Brave media controls | [Browser Media Controls](https://chromewebstore.google.com/detail/browser-media-controls/cfahigpbeoiogheojkdmiebfcampoffa) | [Browser Player](https://github.com/fregante/browser-player) | [vivaldi-media-panel](https://github.com/levz0r/vivaldi-media-panel) |
+| --- | --- | --- | --- | --- | --- |
+| Type | Extension | Built into the browser | Extension | Extension | Extension |
+| Works in Vivaldi | Yes | No (Vivaldi desktop has no built-in media controls) | Not listed | Not listed | Yes, made for Vivaldi |
+| All media tabs in one list | Yes | Yes | Yes | No, one button | Yes |
+| Next and previous track | Any site with Media Session handlers | Yes | Not listed | Not listed | 4 sites by selector, else ±10 s |
+| Seek | Yes | Yes | Yes | Not listed | Yes |
+| Volume per tab | Yes, remembered per site | Not listed | Yes | Not listed | Mute only |
+| Picture-in-picture | Yes | Yes | Not listed | Not listed | No |
+| Playback speed | Yes | Not listed | Not listed | Not listed | No |
+| Pause other tabs automatically | Optional | Not listed | Not listed | Yes | No |
+| Pause all | Yes | Not listed | Not listed | Not listed | No |
+| Video call controls | Yes | Not listed | Not listed | Not listed | No |
+| Skip ad, chapters | Yes, when the site supports them | Not listed | Not listed | Not listed | No |
+| Keyboard shortcuts | Yes, can be global | Hardware media keys | Not listed | Not listed | No |
+| Cast | No (not available to extensions) | Yes | Not listed | Not listed | No |
+| Side panel | Yes | No, toolbar button | Yes | No, toolbar button | Vivaldi web panel |
+| How it gets state | Page events, no polling | Browser internals | Not listed | Not listed | Injects a script into each media tab once a second |
+| Open source | Yes (MIT) | Chromium | Not listed | Yes | Yes (MIT) |
+
+Summary:
+
+- **Chrome and Brave** have good built-in controls, including cast, which no extension can offer. Their documentation does not mention volume, speed, auto-pause, or pause all, which Cue has. In Vivaldi, which has no built-in media controls on desktop, Cue fills the gap.
+- **Browser Media Controls** also works from a side panel and has seek and volume. It also connects to a desktop app and Stream Deck, which Cue does not.
+- **Browser Player** focuses on one thing: pausing other tabs when one starts. Cue has this as an option.
+- **vivaldi-media-panel** inspired Cue. Cue replaces its once-a-second polling with page events, and its per-site selectors with Media Session handlers. vivaldi-media-panel also docks into Vivaldi's tab bar with custom CSS, which Cue does not do.
+
+Sources: [Chrome Help: control your music and videos](https://support.google.com/chrome/answer/9692215?hl=en), [Chrome picture-in-picture in media controls](https://mspoweruser.com/great-news-you-can-now-activate-the-picture-in-picture-mode-directly-from-the-global-media-controls-in-chrome/), [Brave media controls issue #12943](https://github.com/brave/brave-browser/issues/12943), [Vivaldi forum: media hub request](https://forum.vivaldi.net/topic/43572/media-control-feature-like-media-hub-of-chrome), [Vivaldi 8.3 release notes](https://vivaldi.com/blog/vivaldi-on-mobile-8-3/). Vivaldi 8.3 adds media controls for tabs on Android only.
+
 ## Privacy
 
 Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings and the volume you chose for each site. See [PRIVACY.md](PRIVACY.md).
@@ -75,12 +108,12 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 
 ## Known limitations
 
-- **The clock depends on the site.** Cue uses the site's own clock when the site publishes one with `navigator.mediaSession.setPositionState()`. Otherwise it uses the media element's clock. On players that put several tracks into one media element, the element's clock can show the wrong time after autoplay moves to the next track. This has not been checked on YouTube Music.
-- **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. The wrappers call the original functions and return their results. A site that checks for modified built-in functions can detect them.
-- **Some audio is not detected.** Cue finds media when it plays, loads, or is in the page. A site that plays audio from an element that is never added to the page, and that starts it without `play()`, does not appear in Cue.
-- **Sites can override the volume.** Some players, for example YouTube, keep their own volume setting and can replace the volume that Cue sets.
+- **The clock depends on the site.** Cue uses the site's own clock when the site publishes one with `navigator.mediaSession.setPositionState()`. On YouTube and YouTube Music, Cue reads the track clock from YouTube's player, because one media element plays the whole autoplay queue. On other sites Cue uses the media element's clock. A different site that plays a queue through one element, and publishes no clock, can show the wrong time after autoplay. The YouTube support is tested against a page that imitates YouTube's player, not against YouTube itself.
+- **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. There is no other way for an extension to get a site's Media Session handlers. The wrappers call the original functions and return their results. A site that checks for modified built-in functions can detect them.
+- **Some audio is not detected.** Cue finds media when it plays, loads, or is in the page. When the browser marks a tab as playing sound and Cue knows nothing in it, Cue also searches open shadow roots. Cue cannot find media inside closed shadow roots, media that is never added to the page and starts without `play()`, or sound made only with the Web Audio API.
+- **Sites can override the volume.** Some players keep their own volume setting and can replace the volume that Cue sets. On YouTube, Cue sets the volume through YouTube's player, so YouTube keeps it.
 - **Skip ad, call controls, and chapters need site support.** These buttons appear only when the site registers the related Media Session handlers or chapter data.
-- **Picture-in-picture is for video only.** Audio-only tabs do not show the button.
+- **Picture-in-picture is for video only.** Audio-only tabs do not show the button. Cue also hides it when a site turns picture-in-picture off for its video.
 - **Casting is not available.** Browsers do not let extensions use their Cast feature.
 - **The popup window itself.** Cue's page loads in a few tens of milliseconds. The remaining time between the click and the popup is the browser. In Vivaldi, a web panel opens faster than the toolbar popup because it stays loaded.
 
@@ -91,6 +124,8 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 `npm test` loads the extension into Playwright's Chromium, opens local test pages that play audio and video, and drives Cue through its real panel. It checks:
 
 - metadata, artwork, and the clock
+- the YouTube player clock, seek, and volume, on a page that imitates YouTube's player
+- media inside a shadow root (the test calls the audible-tab handler directly, because headless Chromium never marks a tab as audible)
 - next and previous through Media Session handlers
 - play, pause, seek, volume, speed, mute, and pause all
 - keyboard shortcuts
@@ -101,6 +136,7 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 - volume memory per site
 - the badge count
 - that slow artwork does not delay the popup
+- safety checks: volume memory leaves muted media muted, a page cannot change the site name on its card or outrank other frames, a paused background element does not take the controls from media in the page, a frame that stops answering is removed, and hidden cards are not shortcut targets
 
 The tests use local test pages only. They do not use real sites.
 

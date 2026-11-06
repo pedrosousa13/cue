@@ -52,6 +52,8 @@ function icon(name) {
 
 // --- Helpers ----------------------------------------------------------------
 const RATES = [1, 1.25, 1.5, 2, 0.75];
+// background.js has already limited artwork to https, data images, or http on
+// the tab's own host.
 const SAFE_IMAGE = /^(https?:|data:image\/)/;
 
 const el = (tag, props = {}, ...children) => {
@@ -96,8 +98,14 @@ const positionOf = ({ state }) => {
 };
 
 // --- Talking to tabs ----------------------------------------------------------
+// A frame that cannot be reached is gone (crashed, or left without pagehide):
+// tell the hub so its card goes away.
 const command = (item, action, value) =>
-  chrome.tabs.sendMessage(item.tabId, { type: "command", action, value }, { frameId: item.frameId }).catch(() => {});
+  chrome.tabs
+    .sendMessage(item.tabId, { type: "command", action, value }, { frameId: item.frameId })
+    .catch(() =>
+      chrome.runtime.sendMessage({ type: "unreachable", tabId: item.tabId, frameId: item.frameId }).catch(() => {})
+    );
 
 // Goes through chrome.scripting rather than a message: the injected call keeps
 // this click's user gesture, which picture-in-picture requires.
@@ -141,11 +149,11 @@ let items = [];
 function createCard() {
   const card = { item: null, dragging: false };
 
-  const artImg = el("img", { alt: "" });
+  const artImg = el("img", { alt: "", referrerPolicy: "no-referrer" });
   const art = el("button", { type: "button", className: "art", title: "Go to tab" }, artImg);
   const title = el("button", { type: "button", className: "title" });
   const artist = el("div", { className: "artist" });
-  const sourceIcon = el("img", { alt: "" });
+  const sourceIcon = el("img", { alt: "", referrerPolicy: "no-referrer" });
   const sourceText = el("span");
   const source = el("div", { className: "source" }, sourceIcon, sourceText);
   const chapter = el("div", { className: "chapter" });
@@ -255,8 +263,9 @@ function paint(card) {
   setImage(card.sourceIcon, favicon);
   card.sourceIcon.hidden = !favicon;
 
-  const art = state.artwork || favicon;
-  card.art.classList.toggle("fallback", !state.artwork);
+  const artwork = SAFE_IMAGE.test(state.artwork) ? state.artwork : "";
+  const art = artwork || favicon;
+  card.art.classList.toggle("fallback", !artwork);
   if (art) {
     setImage(card.artImg, art);
     card.artImg.hidden = false;

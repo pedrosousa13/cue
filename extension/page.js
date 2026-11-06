@@ -5,9 +5,20 @@
 // It talks to relay.js (the isolated world) through two window events that
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
+  // Keep equal to manifest.json "version"; npm test checks it.
+  const VERSION = "0.3.0";
   const INSTALLED = Symbol.for("cue.installed");
-  if (window[INSTALLED]) return; // injected twice after an extension update
-  Object.defineProperty(window, INSTALLED, { value: true });
+  if (window[INSTALLED] === VERSION) return; // already running in this frame
+  // An older copy is still here after an extension update. Tell it to stop
+  // answering, then take over. (0.2.x copies predate this and cannot be told.)
+  if (window[INSTALLED]) window.dispatchEvent(new Event("cue:retire"));
+  try {
+    Object.defineProperty(window, INSTALLED, { value: VERSION, configurable: true });
+  } catch {
+    return; // a 0.2.x copy locked the marker; leave it in charge
+  }
+  let retired = false;
+  window.addEventListener("cue:retire", () => (retired = true), { once: true });
 
   const STATE_EVENT = "cue:state";
   const COMMAND_EVENT = "cue:command";
@@ -96,10 +107,18 @@
   // --- Media element discovery ----------------------------------------------
   // Listeners go on the element itself, so elements inside shadow roots and
   // elements never attached to the document (new Audio()) still report.
+  const lastPlayed = new WeakMap(); // element -> time it last started
+
   const watch = (el) => {
     if (elements.has(el)) return;
     elements.add(el);
     for (const type of MEDIA_EVENTS) el.addEventListener(type, schedule);
+    el.addEventListener("play", () => lastPlayed.set(el, Date.now()));
+    // A new source means a new item: a clock the site published for the old
+    // one no longer applies.
+    el.addEventListener("emptied", () => {
+      if (el === current) positionState = null;
+    });
   };
 
   const play = HTMLMediaElement.prototype.play;
@@ -125,11 +144,58 @@
     document.querySelectorAll("video, audio").forEach(watch);
     schedule();
   };
+
+  // Media inside a shadow root that starts without play() never reaches the
+  // listeners above. background.js asks for this deeper scan only when the
+  // browser marks the tab audible and Cue knows nothing playing in it, so it
+  // costs nothing on ordinary pages. Closed shadow roots stay out of reach.
+  const deepScan = (root) => {
+    for (const node of root.querySelectorAll("*")) {
+      if (node instanceof HTMLMediaElement) watch(node);
+      if (node.shadowRoot) deepScan(node.shadowRoot);
+    }
+  };
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", scan, { once: true });
   } else {
     scan();
   }
+
+  // --- YouTube player ---------------------------------------------------------
+  // YouTube and YouTube Music stream an autoplay queue through one media
+  // element, so the element's clock covers the whole queue, not the track. The
+  // page's player object (#movie_player) knows the track's clock and keeps its
+  // own volume, which it would otherwise reapply over the element's. Used only
+  // when the site has not published a clock with setPositionState().
+  // The seekable-window approach comes from levz0r/vivaldi-media-panel (MIT).
+  const youtube = (el) => {
+    const mp = document.getElementById("movie_player");
+    if (!mp || !el || !mp.contains(el) || typeof mp.getProgressState !== "function") return null;
+    return mp;
+  };
+
+  const youtubeClock = (mp, el) => {
+    if (el.duration === Infinity) return null; // live: keep it live
+    try {
+      const p = mp.getProgressState();
+      // Not p.duration: it reports how much has buffered and grows while the
+      // track loads. The seekable window is the track.
+      const length = p.seekableEnd - p.seekableStart;
+      if (Number.isFinite(length) && length > 0 && Number.isFinite(p.current)) {
+        // p.current is already track time (measured in the source above).
+        return { position: Math.min(length, Math.max(0, p.current)), duration: length };
+      }
+    } catch {}
+    return null;
+  };
+
+  const youtubeVolume = (mp) => {
+    try {
+      const v = mp.getVolume();
+      if (Number.isFinite(v)) return { volume: v / 100, muted: !!mp.isMuted() };
+    } catch {}
+    return null;
+  };
 
   // --- Picking the element the user is listening to --------------------------
   const score = (el) =>
@@ -138,16 +204,28 @@
     (el.duration > 0 ? 2 : 0) +
     Math.min(1, (el.clientWidth * el.clientHeight) / (640 * 360));
 
+  let current = null; // the element the last snapshot reported
+
   const primary = () => {
     let best = null;
     let bestScore = -1;
+    // Detached, paused elements (new Audio() that was paused) are kept so a
+    // paused player can be resumed, but only the most recent one: sites that
+    // create an element per sound would otherwise fill this set.
+    let keepDetached = null;
     for (const el of elements) {
-      if (!el.isConnected && (el.ended || !el.currentSrc)) {
-        elements.delete(el); // detached and finished: let it be collected
+      if (el.isConnected || !el.paused) continue;
+      if (!keepDetached || (lastPlayed.get(el) || 0) > (lastPlayed.get(keepDetached) || 0)) keepDetached = el;
+    }
+    for (const el of elements) {
+      const detachedPaused = !el.isConnected && el.paused;
+      if (detachedPaused && (el !== keepDetached || el.ended || !el.currentSrc)) {
+        elements.delete(el); // let it be collected
         continue;
       }
       if (el.paused && el.readyState === 0) continue; // nothing loaded yet
-      const s = score(el);
+      // A detached paused element never outranks media that is in the page.
+      const s = score(el) - (detachedPaused ? 6 : 0);
       if (s > bestScore) {
         best = el;
         bestScore = s;
@@ -171,7 +249,8 @@
     try {
       const url = new URL(pick.src, location.href);
       if (url.protocol === "https:" || url.protocol === "http:") return url.href;
-      if (url.protocol === "data:" && url.href.length < 200000) return url.href;
+      // Small inline images only: every state is stored in session storage.
+      if (url.protocol === "data:" && url.href.length < 20000) return url.href;
     } catch {}
     return "";
   };
@@ -188,6 +267,7 @@
     const inCall = CALL_ACTIONS.some((a) => handlers.has(a));
     if (!found && !inCall) return null;
     const el = found ? found.el : null;
+    current = el;
     const md = navigator.mediaSession && navigator.mediaSession.metadata;
     const playing = !!el && !el.paused && !el.ended;
     const now = Date.now();
@@ -195,11 +275,23 @@
     let position = el ? el.currentTime : 0;
     let duration = el ? el.duration : 0;
     let rate = el ? el.playbackRate : 1;
+    let volume = el ? el.volume : 1;
+    let muted = el ? el.muted : false;
+    const mp = youtube(el);
     if (positionState && el) {
       const ps = positionState;
       position = Math.min(ps.duration, ps.position + (playing ? ((now - ps.at) / 1000) * ps.rate : 0));
       duration = ps.duration;
       rate = ps.rate;
+    } else if (mp) {
+      const clock = youtubeClock(mp, el);
+      if (clock) ({ position, duration } = clock);
+    }
+    if (mp) {
+      // The element's volume includes YouTube's loudness normalization; the
+      // player's volume is the number the user set.
+      const v = youtubeVolume(mp);
+      if (v) ({ volume, muted } = v);
     }
 
     return {
@@ -213,10 +305,11 @@
       album: text(md && md.album),
       artwork: md ? artworkUrl(md.artwork) : "",
       actions: [...handlers.keys()],
-      video: el instanceof HTMLVideoElement && el.videoWidth > 0,
+      // Respect a site that turns picture-in-picture off for its video.
+      video: el instanceof HTMLVideoElement && el.videoWidth > 0 && !el.disablePictureInPicture,
       pip: !!document.pictureInPictureElement,
-      volume: el ? el.volume : 1,
-      muted: el ? el.muted : false,
+      volume,
+      muted,
       chapters: chapterList(md),
       inCall,
       mic: call.mic,
@@ -236,6 +329,7 @@
 
   function emit(force) {
     timer = 0;
+    if (retired) return;
     const state = snapshot();
     if (!force && (state ? last && unchanged(state, last) : !last)) return;
     last = state;
@@ -263,6 +357,13 @@
 
   const seekElement = (el, time) => {
     if (!el) return;
+    const mp = youtube(el);
+    if (mp && !positionState && typeof mp.seekTo === "function" && youtubeClock(mp, el)) {
+      try {
+        mp.seekTo(Math.max(0, time), true); // track time, which the player maps itself
+        return;
+      } catch {}
+    }
     // With a site clock, element time can be offset from track time. Keep the
     // offset so seeking lands in the current track, not an earlier one.
     const offset = positionState ? el.currentTime - snapshot().position : 0;
@@ -276,12 +377,10 @@
         await document.exitPictureInPicture();
         return true;
       }
-      let video = el instanceof HTMLVideoElement ? el : null;
-      if (!video) {
-        for (const e of elements) if (e instanceof HTMLVideoElement && e.videoWidth > 0) video = e;
-      }
+      const allowed = (v) => v instanceof HTMLVideoElement && v.videoWidth > 0 && !v.disablePictureInPicture;
+      let video = allowed(el) ? el : null;
+      if (!video) for (const e of elements) if (allowed(e)) video = e;
       if (!video) return false;
-      video.disablePictureInPicture = false;
       await video.requestPictureInPicture();
       return true;
     } catch {
@@ -292,11 +391,15 @@
   // Picture-in-picture needs a user gesture. The panel calls this through
   // chrome.scripting, which carries the click's gesture into the page; a plain
   // message would not.
-  Object.defineProperty(window, Symbol.for("cue.pip"), {
-    value: () => togglePip(primary()?.el),
-  });
+  try {
+    Object.defineProperty(window, Symbol.for("cue.pip"), {
+      value: () => togglePip(primary()?.el),
+      configurable: true, // so a newer copy can replace it after an update
+    });
+  } catch {}
 
   window.addEventListener(COMMAND_EVENT, (e) => {
+    if (retired) return;
     let cmd;
     try {
       cmd = JSON.parse(e.detail);
@@ -305,6 +408,10 @@
     }
     const { action, value } = cmd || {};
     if (action === "report") return emit(true);
+    if (action === "scan") {
+      deepScan(document);
+      return schedule();
+    }
 
     const el = primary()?.el;
     switch (action) {
@@ -330,7 +437,7 @@
       case "seekforward": {
         const offset = action === "seekforward" ? 10 : -10;
         if (!callHandler(action, { seekOffset: 10 }) && el) {
-          seekElement(el, (positionState ? snapshot().position : el.currentTime) + offset);
+          seekElement(el, snapshot().position + offset); // track time, from whichever clock is in use
         }
         break;
       }
@@ -338,12 +445,22 @@
         if (!Number.isFinite(value)) break;
         if (!callHandler("seekto", { seekTime: value, fastSeek: false })) seekElement(el, value);
         break;
-      case "volume":
-        if (el && Number.isFinite(value)) {
-          el.volume = Math.min(1, Math.max(0, value));
-          if (value > 0) el.muted = false;
+      case "volume": {
+        if (!el || !Number.isFinite(value)) break;
+        const v = Math.min(1, Math.max(0, value));
+        const mp = youtube(el);
+        if (mp && typeof mp.setVolume === "function") {
+          // Through the player, so YouTube keeps it instead of reapplying its own.
+          try {
+            mp.setVolume(Math.round(v * 100));
+            if (v > 0 && mp.isMuted()) mp.unMute();
+            break;
+          } catch {}
         }
+        el.volume = v;
+        if (v > 0) el.muted = false;
         break;
+      }
       case "rate":
         if (el && Number.isFinite(value) && value > 0) el.playbackRate = value;
         break;

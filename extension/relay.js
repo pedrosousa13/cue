@@ -33,8 +33,13 @@
     } catch {}
   });
 
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg && msg.type === "command") command({ action: msg.action, value: msg.value });
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg && msg.type === "command") {
+      command({ action: msg.action, value: msg.value });
+      // Always answer: a command that gets no reply looks like a dead frame,
+      // and the hub removes dead frames.
+      sendResponse(true);
+    }
   });
 
   // Leaving the page (or entering the back/forward cache) removes this frame

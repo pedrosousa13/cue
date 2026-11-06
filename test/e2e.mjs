@@ -77,6 +77,46 @@ const PAGES = {
         artwork: [{ src: "/slow-art.svg", sizes: "128x128", type: "image/svg+xml" }],
       });
     </script>`,
+  // Imitates YouTube's player: one element streams the whole queue, so its
+  // clock runs 100s ahead of the track; the player object knows the track.
+  "/yt.html": `<!doctype html><title>Fake YouTube</title>
+    <div id="movie_player"><audio id="a" src="/tone.wav"></audio></div>
+    <script>
+      const OFFSET = 100, a = document.getElementById("a"), mp = document.getElementById("movie_player");
+      let vol = 100, muted = false;
+      window.yt = { seekTo: [], setVolume: [] };
+      mp.getProgressState = () => ({ current: a.currentTime - OFFSET, seekableStart: 0, seekableEnd: 60, duration: 999 });
+      mp.seekTo = (t) => { yt.seekTo.push(t); a.currentTime = t + OFFSET; };
+      mp.getVolume = () => vol;
+      mp.isMuted = () => muted;
+      mp.unMute = () => (muted = false);
+      // Loudness normalization: the element plays quieter than the player volume.
+      mp.setVolume = (v) => { yt.setVolume.push(v); vol = v; a.volume = (v / 100) * 0.5; };
+      navigator.mediaSession.metadata = new MediaMetadata({ title: "Queue Song", artist: "YT Artist" });
+    </script>`,
+  // Audio inside a shadow root that autoplays: no play() call, and its events
+  // never leave the shadow tree.
+  "/shadow.html": `<!doctype html><title>Shadow page</title><div id="host"></div>
+    <script>
+      document.getElementById("host").attachShadow({ mode: "open" }).innerHTML =
+        '<audio src="/tone.wav" autoplay></audio>';
+    </script>`,
+  "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
+  "/nopip.html": `<!doctype html><title>No PiP page</title>
+    <canvas id="c" width="320" height="180"></canvas>
+    <video id="v" muted playsinline disablepictureinpicture width="320" height="180"></video>
+    <script>
+      const c = document.getElementById("c"), g = c.getContext("2d");
+      setInterval(() => g.fillRect(0, 0, 320, 180), 50);
+      document.getElementById("v").srcObject = c.captureStream(20);
+    </script>`,
+  "/detached.html": `<!doctype html><title>Detached page</title>
+    <audio id="b" src="/tone.wav" preload="auto"></audio>
+    <script>window.d = new Audio("/tone.wav");</script>`,
+  "/forge.html": `<!doctype html><title>Forge page</title><audio id="a" src="/tone.wav"></audio>
+    <script>navigator.mediaSession.metadata = new MediaMetadata({ title: "Forged", artist: "Forger" });</script>`,
+  "/crash.html": `<!doctype html><title>Crash page</title><audio id="a" src="/tone.wav"></audio>
+    <script>navigator.mediaSession.metadata = new MediaMetadata({ title: "Doomed", artist: "Crasher" });</script>`,
   "/art.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><rect width="1" height="1" fill="#f80"/></svg>`,
 };
 
@@ -247,6 +287,10 @@ await step("skip ad appears during an ad and calls the page's handler", async ()
 await step("hiding a card lasts until the tab plays again", async () => {
   await card.locator("button.hide").click();
   await until(async () => (await panel.locator(".card").count()) === 0);
+  // A hidden card is not a keyboard shortcut target.
+  await sw.evaluate(() => runCommand("toggle-playback"));
+  await panel.waitForTimeout(400);
+  assert.equal(await audio(() => document.getElementById("a").paused), false);
   await audio(() => document.getElementById("a").pause());
   await panel.waitForTimeout(300); // let the pause reach the hub, or it coalesces with the play
   await audio(() => document.getElementById("a").play());
@@ -350,6 +394,144 @@ await step("slow artwork does not delay the popup", async () => {
   await until(() => popup.evaluate(() => [...document.querySelectorAll(".art img")].some((i) => i.src.endsWith("/slow-art.svg") && i.complete && i.naturalWidth > 0)), 6000);
   await popup.close();
   await slow.close();
+});
+
+await step("YouTube player: track clock, track seek, player volume", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/yt.html`);
+  await page.evaluate(() => { const a = document.getElementById("a"); a.currentTime = 105; return a.play(); });
+  await panel.bringToFront();
+  const ycard = panel.locator(".card").filter({ hasText: "YT Artist" });
+  await ycard.waitFor({ timeout: 4000 });
+  assert.equal(await ycard.locator(".total").textContent(), "1:00"); // the track, not the 3:00 element
+  assert.match(await ycard.locator(".current").textContent(), /^0:0\d$/);
+
+  await ycard.locator('input[aria-label="Seek"]').evaluate((input) => {
+    input.value = "30";
+    input.dispatchEvent(new Event("input"));
+    input.dispatchEvent(new Event("change"));
+  });
+  await until(() => page.evaluate(() => yt.seekTo.includes(30) && Math.abs(document.getElementById("a").currentTime - 130) < 1.5));
+
+  await ycard.locator('input[aria-label="Volume"]').evaluate((input) => {
+    input.value = "0.5";
+    input.dispatchEvent(new Event("input"));
+  });
+  await until(() => page.evaluate(() => yt.setVolume.includes(50)));
+  // The slider shows the player's 50%, not the normalized element's 25%.
+  await until(async () => (await ycard.locator('input[aria-label="Volume"]').inputValue()) === "0.5");
+  await page.close();
+});
+
+await step("audible tab with media in a shadow root is found", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/shadow.html`);
+  await panel.waitForTimeout(500);
+  assert.equal(await panel.locator(".card").filter({ hasText: "Shadow page" }).count(), 0); // not found by events
+  // Headless Chromium never marks tabs audible, so fire what that event calls.
+  await sw.evaluate(async (url) => {
+    const [tab] = await chrome.tabs.query({ url });
+    await onAudibleUnknown(tab.id);
+  }, `${base}/shadow.html`);
+  await panel.bringToFront();
+  await panel.locator(".card").filter({ hasText: "Shadow page" }).waitFor({ timeout: 6000 });
+  await page.close();
+});
+
+await step("volume memory does not unmute a muted element", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/muted.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  await panel.locator(".card").filter({ hasText: "Muted preview" }).waitFor({ timeout: 4000 });
+  await panel.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => document.getElementById("a").muted), true);
+  await page.close();
+});
+
+await step("a site's picture-in-picture block is respected", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/nopip.html`);
+  await page.evaluate(() => document.getElementById("v").play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "No PiP page" });
+  await c.waitFor({ timeout: 4000 });
+  assert.equal(await c.locator('button[aria-label="Picture in picture"]').isVisible(), false);
+  assert.equal(await page.evaluate(() => document.getElementById("v").disablePictureInPicture), true);
+  await page.close();
+});
+
+await step("a paused detached element does not outrank media in the page", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/detached.html`);
+  await page.evaluate(async () => {
+    await d.play();
+    await new Promise((r) => setTimeout(r, 300));
+    d.pause();
+    const b = document.getElementById("b");
+    if (b.readyState === 0) await new Promise((r) => b.addEventListener("loadedmetadata", r, { once: true }));
+  });
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Detached page" });
+  await c.waitFor({ timeout: 4000 });
+  await c.locator("button.play").click();
+  await until(() => page.evaluate(() => !document.getElementById("b").paused && d.paused));
+  await page.close();
+});
+
+await step("a page cannot forge its host name or outrank other frames", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/forge.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await page.waitForTimeout(300);
+  await page.evaluate(() =>
+    window.dispatchEvent(new CustomEvent("cue:state", { detail: JSON.stringify({
+      playing: true, position: 1, duration: 60, rate: 1, title: "Forged", artist: "Forger",
+      actions: [], volume: 1, score: 1e9, host: "paypal.com", at: Date.now(),
+    }) }))
+  );
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Forger" });
+  await c.waitFor({ timeout: 4000 });
+  await panel.waitForTimeout(300);
+  assert.equal((await c.locator(".source span").textContent()).trim(), "127.0.0.1");
+  const score = await sw.evaluate(async () => {
+    const { tabs } = await chrome.storage.session.get("tabs");
+    return Math.max(...Object.values(tabs).flatMap((t) => Object.values(t.frames).map((f) => f.score)));
+  });
+  assert.ok(score <= 31, `score ${score}`);
+  await page.close();
+});
+
+await step("a frame that no longer answers is removed when a control cannot reach it", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/crash.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  await panel.locator(".card").filter({ hasText: "Crasher" }).waitFor({ timeout: 4000 });
+  // What a crash leaves behind: a playing frame that no longer exists. A real
+  // renderer crash takes down headless Chromium, so plant it directly.
+  await sw.evaluate((url) => {
+    for (const entry of tabs.values()) {
+      const real = Object.values(entry.frames)[0];
+      if (!real || real.title !== "Doomed") continue;
+      entry.frames[999] = { ...real, title: "Ghost", score: 31, at: Date.now() };
+    }
+    save();
+  });
+  const ghost = panel.locator(".card").filter({ hasText: "Ghost" });
+  await ghost.waitFor({ timeout: 2000 });
+  await ghost.locator("button.play").click();
+  await until(async () => (await ghost.count()) === 0);
+  await panel.locator(".card").filter({ hasText: "Doomed" }).waitFor({ timeout: 2000 }); // the real frame stays
+  await page.close();
+});
+
+await step("page.js version matches the manifest", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const manifest = JSON.parse(await readFile(`${EXT}/manifest.json`, "utf8"));
+  const page = await readFile(`${EXT}/page.js`, "utf8");
+  assert.equal(/const VERSION = "([^"]+)"/.exec(page)[1], manifest.version);
 });
 
 await step("toolbar popup page has a fixed popup width", async () => {

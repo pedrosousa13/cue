@@ -11,15 +11,28 @@ importScripts("settings.js");
 const tabs = new Map();
 let settings = { ...CUE_DEFAULTS };
 
+let settingsChanged = false;
+const removedTabs = new Set(); // late messages must not bring a closed tab back
+
+// A failed read must not leave every handler waiting forever: fall back to
+// empty state and default settings.
 const loaded = Promise.all([
-  chrome.storage.session.get("tabs").then(({ tabs: saved }) => {
-    for (const entry of Object.values(saved || {})) tabs.set(entry.tabId, entry);
-  }),
-  cueSettings().then((s) => (settings = s)),
+  chrome.storage.session
+    .get("tabs")
+    .then(({ tabs: saved }) => {
+      for (const entry of Object.values(saved || {})) tabs.set(entry.tabId, entry);
+    })
+    .catch(() => {}),
+  cueSettings()
+    .then((s) => {
+      if (!settingsChanged) settings = s; // a change that arrived first is newer
+    })
+    .catch(() => {}),
 ]);
 
 chrome.storage.sync.onChanged.addListener((changes) => {
   if (!changes.settings) return;
+  settingsChanged = true;
   settings = { ...CUE_DEFAULTS, ...changes.settings.newValue };
   updateBadge();
 });
@@ -30,7 +43,9 @@ function save() {
   savePending = true;
   setTimeout(() => {
     savePending = false;
-    chrome.storage.session.set({ tabs: Object.fromEntries(tabs) }).catch(() => {});
+    chrome.storage.session
+      .set({ tabs: Object.fromEntries(tabs) })
+      .catch((e) => console.warn("Cue: could not save media state", e));
     updateBadge();
   }, 0);
 }
@@ -44,7 +59,7 @@ const bool = (v) => v === true;
 
 function sanitize(s) {
   if (!s || typeof s !== "object") return null;
-  const artwork = str(s.artwork, 200000);
+  const artwork = str(s.artwork, 20000); // page.js sends data: images under 20 KB only
   return {
     playing: bool(s.playing),
     position: Math.max(0, num(s.position)),
@@ -69,8 +84,8 @@ function sanitize(s) {
     inCall: bool(s.inCall),
     mic: typeof s.mic === "boolean" ? s.mic : null,
     camera: typeof s.camera === "boolean" ? s.camera : null,
-    score: num(s.score),
-    host: str(s.host, 255),
+    // page.js scores 0..31. Clamping keeps a frame from claiming more.
+    score: Math.min(31, Math.max(0, num(s.score))),
     at: num(s.at) || Date.now(),
   };
 }
@@ -86,9 +101,11 @@ const tabInfo = (tab) => ({
 chrome.runtime.onMessage.addListener((msg, sender) => {
   if (!msg) return;
   if (msg.type === "state" && sender.tab && sender.tab.id >= 0) {
-    handleState(sender.tab, sender.frameId ?? 0, msg.state);
+    handleState(sender, msg.state);
   } else if (msg.type === "dismiss" && isOwnPage(sender) && Number.isInteger(msg.tabId)) {
     dismiss(msg.tabId);
+  } else if (msg.type === "unreachable" && isOwnPage(sender) && Number.isInteger(msg.tabId)) {
+    dropFrame(msg.tabId, Number(msg.frameId) || 0); // the panel could not reach it
   }
 });
 
@@ -96,9 +113,36 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 // Content scripts share the extension id, so check the sending page's URL.
 const isOwnPage = (sender) => (sender.url || "").startsWith(chrome.runtime.getURL(""));
 
-async function handleState(tab, frameId, raw) {
+// The host name comes from the browser, not from the page, so a page cannot
+// label its card as another site.
+function senderHost(sender) {
+  for (const url of [sender.url, sender.origin]) {
+    try {
+      const host = new URL(url).hostname;
+      if (host) return host;
+    } catch {}
+  }
+  return "";
+}
+
+async function handleState(sender, raw) {
   await loaded;
+  const tab = sender.tab;
+  const frameId = sender.frameId ?? 0;
+  if (removedTabs.has(tab.id)) return;
   const state = sanitize(raw);
+  if (state) {
+    state.host = senderHost(sender);
+    // Plain-http artwork only from the page's own host: otherwise a page could
+    // make Cue fetch any http address on its behalf.
+    if (state.artwork.startsWith("http:")) {
+      try {
+        if (new URL(state.artwork).hostname !== state.host) state.artwork = "";
+      } catch {
+        state.artwork = "";
+      }
+    }
+  }
   let entry = tabs.get(tab.id);
   if (!state) {
     if (!entry) return;
@@ -119,14 +163,21 @@ async function handleState(tab, frameId, raw) {
     entry.lastActive = Date.now();
     if (!prev || !prev.playing) {
       entry.dismissed = false; // hiding a card means "not now", not "never"
-      if (settings.autoPause && !entry.muted && !state.muted && state.volume > 0) pauseOthers(tab.id);
+      // At most once every 2 s per tab, so a page that toggles playback in a
+      // loop cannot keep pausing everything else.
+      const now = Date.now();
+      if (settings.autoPause && !entry.muted && !state.muted && state.volume > 0 && now - (entry.autoPausedAt || 0) > 2000) {
+        entry.autoPausedAt = now;
+        pauseOthers(tab.id);
+      }
     }
   }
   save();
 }
 
-// Only audible playback pauses other tabs, so a muted hover preview on a video
-// site does not stop your music.
+// Only audible playback triggers this (see handleState), so a muted hover
+// preview does not stop your music. Once triggered, everything else that is
+// playing pauses, muted or not.
 function pauseOthers(tabId) {
   for (const entry of tabs.values()) {
     if (entry.tabId === tabId) continue;
@@ -145,7 +196,8 @@ async function dismiss(tabId) {
 }
 
 async function restoreVolume(tabId, frameId, state) {
-  if (!settings.rememberVolume || !state.host) return;
+  // A muted element stays muted: setting a volume would also unmute it.
+  if (!settings.rememberVolume || !state.host || state.muted) return;
   const { volumes = {} } = await chrome.storage.local.get("volumes");
   const saved = volumes[state.host];
   if (typeof saved === "number" && Math.abs(saved - state.volume) > 0.01) {
@@ -153,9 +205,17 @@ async function restoreVolume(tabId, frameId, state) {
   }
 }
 
+// The browser hears sound from a tab Cue has no player for: ask its frames to
+// look deeper (inside shadow roots). Event-driven, so no polling. Top-level so
+// tests can call it; headless Chromium never marks a tab audible.
+function onAudibleUnknown(tabId) {
+  return chrome.tabs.sendMessage(tabId, { type: "command", action: "scan" }).catch(() => {});
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   await loaded;
   const entry = tabs.get(tabId);
+  if (!entry && change.audible === true) return onAudibleUnknown(tabId);
   if (!entry) return;
   if (change.discarded) {
     tabs.delete(tabId);
@@ -168,9 +228,21 @@ chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
 });
 
 const forget = async (tabId) => {
+  removedTabs.add(tabId);
   await loaded;
   if (tabs.delete(tabId)) save();
 };
+
+// A frame that no longer answers (its renderer crashed, or it went away
+// without a pagehide) is removed when a command to it fails.
+async function dropFrame(tabId, frameId) {
+  await loaded;
+  const entry = tabs.get(tabId);
+  if (!entry || !(frameId in entry.frames)) return;
+  delete entry.frames[frameId];
+  if (!Object.keys(entry.frames).length) tabs.delete(tabId);
+  save();
+}
 chrome.tabs.onRemoved.addListener(forget);
 chrome.tabs.onReplaced.addListener((_added, removed) => forget(removed));
 
@@ -199,6 +271,7 @@ function bestFrame(entry) {
 function currentTarget() {
   let target = null;
   for (const entry of tabs.values()) {
+    if (entry.dismissed) continue; // hidden cards are not shortcut targets
     const frame = bestFrame(entry);
     if (!frame) continue;
     const rank = [frame.state.playing ? 1 : 0, entry.lastActive];
@@ -210,7 +283,9 @@ function currentTarget() {
 }
 
 const sendCommand = (tabId, frameId, action, value) =>
-  chrome.tabs.sendMessage(tabId, { type: "command", action, value }, { frameId }).catch(() => {});
+  chrome.tabs
+    .sendMessage(tabId, { type: "command", action, value }, { frameId })
+    .catch(() => dropFrame(tabId, frameId));
 
 // Top-level function so tests can call it from the service worker console.
 async function runCommand(command) {
