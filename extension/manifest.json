@@ -1,0 +1,65 @@
+{
+  "manifest_version": 3,
+  "name": "Cue: Media Controls for Every Tab",
+  "short_name": "Cue",
+  "version": "0.1.0",
+  "description": "Control audio and video in every tab from the toolbar or the side panel.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "scripting", "sidePanel"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["page.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["relay.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true
+    }
+  ],
+  "action": {
+    "default_popup": "panel.html",
+    "default_title": "Cue",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "commands": {
+    "toggle-playback": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Play or pause"
+    },
+    "next-track": {
+      "suggested_key": { "default": "Alt+Shift+Period" },
+      "description": "Next track"
+    },
+    "previous-track": {
+      "suggested_key": { "default": "Alt+Shift+Comma" },
+      "description": "Previous track"
+    },
+    "toggle-mute": {
+      "suggested_key": { "default": "Alt+Shift+M" },
+      "description": "Mute or unmute the tab"
+    }
+  }
+}

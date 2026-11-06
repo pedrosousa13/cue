@@ -1,0 +1,13 @@
+{
+  "name": "cue",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/e2e.mjs",
+    "icons": "node tools/make-icons.mjs",
+    "package": "rm -f cue.zip && cd extension && zip -qr ../cue.zip . -x '.*'"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
