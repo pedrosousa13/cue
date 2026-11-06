@@ -6,7 +6,7 @@
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
   // Keep equal to manifest.json "version"; npm test checks it.
-  const VERSION = "0.3.0";
+  const VERSION = "0.4.0";
   const INSTALLED = Symbol.for("cue.installed");
   if (window[INSTALLED] === VERSION) return; // already running in this frame
   // An older copy is still here after an extension update. Tell it to stop
@@ -23,13 +23,13 @@
   const STATE_EVENT = "cue:state";
   const COMMAND_EVENT = "cue:command";
   const MEDIA_EVENTS = [
-    "play", "pause", "playing", "ended", "seeked", "ratechange",
+    "play", "pause", "playing", "waiting", "ended", "seeked", "ratechange",
     "durationchange", "loadedmetadata", "volumechange", "emptied",
     "enterpictureinpicture", "leavepictureinpicture",
   ];
   // Fields that make a state worth sending. Position is checked separately.
   const STABLE = [
-    "playing", "duration", "live", "rate", "title", "artist", "album",
+    "playing", "advancing", "duration", "live", "ad", "canGoLive", "rate", "title", "artist", "album",
     "artwork", "actions", "video", "pip", "volume", "muted",
     "chapters", "inCall", "mic", "camera",
   ];
@@ -41,6 +41,7 @@
   const handlers = new Map();
   const call = { mic: null, camera: null }; // null: the site has not said
   let positionState = null;
+  let siteSaysLive = false;
   let timer = 0;
   let last = null;
 
@@ -66,6 +67,8 @@
     if (setPositionState) {
       proto.setPositionState = function (state) {
         const result = setPositionState.call(this, state);
+        // duration Infinity is how a site says "live".
+        siteSaysLive = !!state && state.duration === Infinity;
         positionState =
           state && Number.isFinite(state.duration) && state.duration > 0
             ? {
@@ -114,6 +117,16 @@
     elements.add(el);
     for (const type of MEDIA_EVENTS) el.addEventListener(type, schedule);
     el.addEventListener("play", () => lastPlayed.set(el, Date.now()));
+    // While playing, re-check the clock every 2 s. emit() sends only if the
+    // panel's estimate has drifted (for example after a stall the browser
+    // did not report), so this costs a comparison, not a message.
+    let lastCheck = 0;
+    el.addEventListener("timeupdate", () => {
+      const now = Date.now();
+      if (now - lastCheck < 2000) return;
+      lastCheck = now;
+      schedule();
+    });
     // A new source means a new item: a clock the site published for the old
     // one no longer applies.
     el.addEventListener("emptied", () => {
@@ -174,8 +187,29 @@
     return mp;
   };
 
+  // YouTube reports live streams through its player data; the element and
+  // the progress state show durations of years (121601512 s, measured).
+  const youtubeLive = (mp) => {
+    try {
+      const d = mp.getVideoData();
+      return !!(d && (d.isLive || d.isWindowedLive));
+    } catch {
+      return false;
+    }
+  };
+
+  // During an ad, YouTube plays the ad in the same element and marks the player.
+  const youtubeAd = (mp) => mp.classList.contains("ad-showing");
+
+  // YouTube's own Skip button, when it is on screen. Cue only presses it when
+  // the user clicks Skip ad, the same as clicking it on the page.
+  const youtubeSkipButton = () => {
+    const button = document.querySelector(".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern");
+    return button && button.offsetParent !== null ? button : null;
+  };
+
   const youtubeClock = (mp, el) => {
-    if (el.duration === Infinity) return null; // live: keep it live
+    if (el.duration === Infinity || youtubeLive(mp) || youtubeAd(mp)) return null; // live or ad: not the track
     try {
       const p = mp.getProgressState();
       // Not p.duration: it reports how much has buffered and grows while the
@@ -195,6 +229,35 @@
       if (Number.isFinite(v)) return { volume: v / 100, muted: !!mp.isMuted() };
     } catch {}
     return null;
+  };
+
+  // How far behind the live edge playback is, if the stream can be seeked.
+  const liveEdge = (el, mp) => {
+    if (mp) {
+      try {
+        const p = mp.getProgressState();
+        if (p.isAtLiveHead === true) return { behind: 0 };
+        const behind = p.seekableEnd - p.current;
+        if (Number.isFinite(behind) && behind >= 0 && behind < 86400) return { behind };
+      } catch {}
+    }
+    if (el.seekable && el.seekable.length) {
+      const behind = el.seekable.end(el.seekable.length - 1) - el.currentTime;
+      if (Number.isFinite(behind) && behind >= 0) return { behind };
+    }
+    return null;
+  };
+
+  const goLive = (el) => {
+    const mp = youtube(el);
+    if (mp) {
+      try {
+        if (typeof mp.seekToLiveHead === "function") return mp.seekToLiveHead();
+        const p = mp.getProgressState();
+        if (Number.isFinite(p.seekableEnd)) return mp.seekTo(p.seekableEnd, true);
+      } catch {}
+    }
+    if (el && el.seekable && el.seekable.length) el.currentTime = el.seekable.end(el.seekable.length - 1);
   };
 
   // --- Picking the element the user is listening to --------------------------
@@ -270,6 +333,9 @@
     current = el;
     const md = navigator.mediaSession && navigator.mediaSession.metadata;
     const playing = !!el && !el.paused && !el.ended;
+    // Playing but buffering (an ad blocker skipping an ad, a slow network):
+    // the clock must not run ahead of the sound.
+    const advancing = playing && el.readyState >= 3;
     const now = Date.now();
 
     let position = el ? el.currentTime : 0;
@@ -280,7 +346,7 @@
     const mp = youtube(el);
     if (positionState && el) {
       const ps = positionState;
-      position = Math.min(ps.duration, ps.position + (playing ? ((now - ps.at) / 1000) * ps.rate : 0));
+      position = Math.min(ps.duration, ps.position + (advancing ? ((now - ps.at) / 1000) * ps.rate : 0));
       duration = ps.duration;
       rate = ps.rate;
     } else if (mp) {
@@ -294,17 +360,32 @@
       if (v) ({ volume, muted } = v);
     }
 
+    // Live: the element says Infinity, the site said so, YouTube says so, or
+    // the duration is longer than any real recording (live players often use
+    // huge placeholders).
+    const live = !!el && (duration === Infinity || siteSaysLive || (mp && youtubeLive(mp)) || duration > 1e6);
+    const ad = !!mp && youtubeAd(mp);
+    const edge = live ? liveEdge(el, mp) : null;
+
+    const actions = [...handlers.keys()];
+    if (ad && !actions.includes("skipad") && youtubeSkipButton()) actions.push("skipad");
+
     return {
       playing,
-      position: Number.isFinite(position) ? position : 0,
-      duration: Number.isFinite(duration) ? duration : 0,
-      live: duration === Infinity,
+      advancing,
+      position: !live && Number.isFinite(position) ? position : 0,
+      duration: !live && Number.isFinite(duration) ? duration : 0,
+      live,
+      // Seconds behind the live edge, and whether Cue can jump to it.
+      behind: edge ? edge.behind : 0,
+      canGoLive: !!edge,
+      ad,
       rate,
       title: text(md && md.title) || text(document.title) || location.hostname,
       artist: text(md && md.artist),
       album: text(md && md.album),
       artwork: md ? artworkUrl(md.artwork) : "",
-      actions: [...handlers.keys()],
+      actions,
       // Respect a site that turns picture-in-picture off for its video.
       video: el instanceof HTMLVideoElement && el.videoWidth > 0 && !el.disablePictureInPicture,
       pip: !!document.pictureInPictureElement,
@@ -321,11 +402,15 @@
     };
   };
 
-  const expected = (s, at) => (s.playing ? s.position + ((at - s.at) / 1000) * s.rate : s.position);
+  // What the panel shows now for state s: it moves the clock only while
+  // playback is advancing, and the live gap grows while it is not.
+  const expected = (s, at) => (s.advancing ? s.position + ((at - s.at) / 1000) * s.rate : s.position);
+  const expectedBehind = (s, at) => s.behind + ((at - s.at) / 1000) * (s.advancing ? 1 - s.rate : 1);
 
   const unchanged = (a, b) =>
     STABLE.every((k) => JSON.stringify(a[k]) === JSON.stringify(b[k])) &&
-    Math.abs(a.position - expected(b, a.at)) < 1.5;
+    Math.abs(a.position - expected(b, a.at)) < 0.75 &&
+    Math.abs(a.behind - expectedBehind(b, a.at)) < 2;
 
   function emit(force) {
     timer = 0;
@@ -425,9 +510,14 @@
         if (el && !el.paused) pause(el);
         else resume(el);
         break;
+      case "skipad":
+        if (!callHandler("skipad")) youtubeSkipButton()?.click();
+        break;
+      case "golive":
+        goLive(el);
+        break;
       case "previoustrack":
       case "nexttrack":
-      case "skipad":
       case "togglemicrophone":
       case "togglecamera":
       case "hangup":

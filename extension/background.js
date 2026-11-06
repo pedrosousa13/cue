@@ -62,6 +62,11 @@ function sanitize(s) {
   const artwork = str(s.artwork, 20000); // page.js sends data: images under 20 KB only
   return {
     playing: bool(s.playing),
+    // Older page scripts do not send it; then playing is the best guess.
+    advancing: typeof s.advancing === "boolean" ? s.advancing : bool(s.playing),
+    behind: Math.max(0, num(s.behind)),
+    canGoLive: bool(s.canGoLive),
+    ad: bool(s.ad),
     position: Math.max(0, num(s.position)),
     duration: Math.max(0, num(s.duration)),
     live: bool(s.live),

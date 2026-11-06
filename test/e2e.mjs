@@ -82,11 +82,23 @@ const PAGES = {
   "/yt.html": `<!doctype html><title>Fake YouTube</title>
     <div id="movie_player"><audio id="a" src="/tone.wav"></audio></div>
     <script>
-      const OFFSET = 100, a = document.getElementById("a"), mp = document.getElementById("movie_player");
+      window.OFFSET = 100;
+      const a = document.getElementById("a"), mp = document.getElementById("movie_player");
       let vol = 100, muted = false;
-      window.yt = { seekTo: [], setVolume: [] };
+      window.yt = { seekTo: [], setVolume: [], skipped: 0 };
       mp.getProgressState = () => ({ current: a.currentTime - OFFSET, seekableStart: 0, seekableEnd: 60, duration: 999 });
+      mp.getVideoData = () => ({ isLive: false });
       mp.seekTo = (t) => { yt.seekTo.push(t); a.currentTime = t + OFFSET; };
+      // An ad, the way YouTube shows one: a class on the player and a Skip button.
+      window.startYtAd = () => {
+        mp.classList.add("ad-showing");
+        const b = document.createElement("button");
+        b.className = "ytp-skip-ad-button";
+        b.textContent = "Skip";
+        b.onclick = () => { yt.skipped++; mp.classList.remove("ad-showing"); b.remove(); a.dispatchEvent(new Event("durationchange")); };
+        mp.append(b);
+        a.dispatchEvent(new Event("durationchange"));
+      };
       mp.getVolume = () => vol;
       mp.isMuted = () => muted;
       mp.unMute = () => (muted = false);
@@ -100,6 +112,29 @@ const PAGES = {
     <script>
       document.getElementById("host").attachShadow({ mode: "open" }).innerHTML =
         '<audio src="/tone.wav" autoplay></audio>';
+    </script>`,
+  // A YouTube live stream: the player says live; the live edge moves with the
+  // wall clock and starts 42 s ahead of playback.
+  "/yt-live.html": `<!doctype html><title>Fake YouTube live</title>
+    <div id="movie_player"><audio id="a" src="/tone.wav"></audio></div>
+    <script>
+      const a = document.getElementById("a"), mp = document.getElementById("movie_player");
+      const t0 = Date.now();
+      let atHead = false;
+      window.live = { wentLive: 0 };
+      const edge = () => 42 + (Date.now() - t0) / 1000;
+      mp.getVideoData = () => ({ isLive: true });
+      mp.getProgressState = () => ({ current: a.currentTime, seekableStart: 0, seekableEnd: atHead ? a.currentTime : edge(), isAtLiveHead: atHead, duration: 121601512 });
+      mp.seekToLiveHead = () => { live.wentLive++; atHead = true; };
+      mp.seekTo = () => {};
+      mp.getVolume = () => 100;
+      mp.isMuted = () => false;
+      navigator.mediaSession.metadata = new MediaMetadata({ title: "Live Show", artist: "Live Channel" });
+    </script>`,
+  "/site-live.html": `<!doctype html><title>Site live</title><audio id="a" src="/tone.wav"></audio>
+    <script>
+      navigator.mediaSession.metadata = new MediaMetadata({ title: "Radio", artist: "Site Live" });
+      navigator.mediaSession.setPositionState({ duration: Infinity, position: 0 });
     </script>`,
   "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
   "/nopip.html": `<!doctype html><title>No PiP page</title>
@@ -420,6 +455,65 @@ await step("YouTube player: track clock, track seek, player volume", async () =>
   await until(() => page.evaluate(() => yt.setVolume.includes(50)));
   // The slider shows the player's 50%, not the normalized element's 25%.
   await until(async () => (await ycard.locator('input[aria-label="Volume"]').inputValue()) === "0.5");
+
+  // The page's clock jumps 5 s without any media event (a stall the browser did
+  // not report). The periodic check while playing corrects the panel.
+  const shown = async () => {
+    const [m, sec] = (await ycard.locator(".current").textContent()).split(":").map(Number);
+    return m * 60 + sec;
+  };
+  const before = await shown();
+  await page.evaluate(() => (OFFSET = 95));
+  await until(async () => (await shown()) >= before + 5, 4000);
+
+  // An ad: the card says so, seeking is off, and Skip ad presses YouTube's button.
+  await page.evaluate(() => startYtAd());
+  await ycard.locator(".chapter", { hasText: "Ad" }).waitFor({ timeout: 2000 });
+  assert.equal(await ycard.locator('input[aria-label="Seek"]').isDisabled(), true);
+  await ycard.locator("button.skip-ad").click();
+  await until(() => page.evaluate(() => yt.skipped === 1));
+  await until(async () => !(await ycard.locator(".chapter").isVisible()));
+  await page.close();
+});
+
+await step("live stream: behind live, growing while paused, Go live", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/yt-live.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  const lcard = panel.locator(".card").filter({ hasText: "Live Channel" });
+  await lcard.waitFor({ timeout: 4000 });
+  await lcard.locator(".live", { hasText: /LIVE −0:4\d/ }).waitFor({ timeout: 2000 });
+  assert.equal(await lcard.locator(".total").textContent(), "");
+  assert.equal(await lcard.locator('input[aria-label="Seek"]').isDisabled(), true);
+
+  // Paused, the live edge moves on without us.
+  const gap = async () => {
+    const m = /−(\d+):(\d+)/.exec(await lcard.locator(".live").textContent());
+    return m ? Number(m[1]) * 60 + Number(m[2]) : 0;
+  };
+  await lcard.locator("button.play").click();
+  await until(() => page.evaluate(() => document.getElementById("a").paused));
+  const g1 = await gap();
+  await panel.waitForTimeout(2500);
+  assert.ok((await gap()) >= g1 + 2, "gap grows while paused");
+
+  await lcard.locator("button.go-live").click();
+  await until(() => page.evaluate(() => live.wentLive === 1));
+  await lcard.locator(".live", { hasText: /^LIVE$/ }).waitFor({ timeout: 2000 });
+  assert.equal(await lcard.locator("button.go-live").isVisible(), false);
+  await page.close();
+});
+
+await step("a site can declare live with setPositionState", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/site-live.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Site Live" });
+  await c.waitFor({ timeout: 4000 });
+  await c.locator(".live").waitFor({ timeout: 2000 });
+  assert.equal(await c.locator(".total").textContent(), "");
   await page.close();
 });
 

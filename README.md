@@ -6,8 +6,9 @@ Media controls for every tab. Cue lists every tab that plays audio or video, and
 
 - **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Playing tabs come first.
 - **Real next and previous.** Cue calls the site's own track handlers (the Media Session API), the same ones that your keyboard media keys use. This works on any site that supports media keys, with no per-site code. When a site has no track handlers, the buttons skip 10 seconds.
-- **Seek bar and clock.** Drag to seek. Live streams show `LIVE` and do not seek. When a site publishes chapters, the seek bar marks them and the card names the current chapter.
-- **Skip ad.** When a site registers a skip-ad handler, a **Skip ad** button appears.
+- **Seek bar and clock.** Drag to seek. The clock stops while the player buffers, and Cue corrects it if it drifts from the page. When a site publishes chapters, the seek bar marks them and the card names the current chapter.
+- **Live streams.** The card shows `LIVE` at the live edge. When you pause or fall behind, it shows how far behind you are (for example `LIVE −0:42`) and a **Go live** button.
+- **Ads.** During a YouTube ad the card shows "Ad" and seeking is off. When YouTube shows its Skip button, Cue's **Skip ad** presses it.
 - **Video calls.** On call sites that support it (for example Google Meet), the card shows microphone, camera, and hang-up buttons.
 - **Picture-in-picture** for video tabs.
 - **Volume per tab**, plus a tab mute button. Cue remembers the volume for each site.
@@ -112,7 +113,8 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 - **Cue wraps built-in page functions.** To see players and their handlers, Cue wraps `HTMLMediaElement.prototype.play` and the `MediaSession` methods in every page. There is no other way for an extension to get a site's Media Session handlers. The wrappers call the original functions and return their results. A site that checks for modified built-in functions can detect them.
 - **Some audio is not detected.** Cue finds media when it plays, loads, or is in the page. When the browser marks a tab as playing sound and Cue knows nothing in it, Cue also searches open shadow roots. Cue cannot find media inside closed shadow roots, media that is never added to the page and starts without `play()`, or sound made only with the Web Audio API.
 - **Sites can override the volume.** Some players keep their own volume setting and can replace the volume that Cue sets. On YouTube, Cue sets the volume through YouTube's player, so YouTube keeps it.
-- **Skip ad, call controls, and chapters need site support.** These buttons appear only when the site registers the related Media Session handlers or chapter data.
+- **Skip ad, call controls, and chapters need site support.** These buttons appear only when the site registers the related Media Session handlers or chapter data. On YouTube, Cue finds ads and the Skip button from YouTube's player and page. If YouTube changes those, ad detection stops working until Cue is updated.
+- **Live detection.** Cue treats media as live when the element reports an infinite duration, the site says so with `setPositionState()`, YouTube's player says so, or the duration is longer than about 11 days (live players often report placeholder durations of years). A live stream that reports an ordinary duration looks like a normal video.
 - **Picture-in-picture is for video only.** Audio-only tabs do not show the button. Cue also hides it when a site turns picture-in-picture off for its video.
 - **Casting is not available.** Browsers do not let extensions use their Cast feature.
 - **The popup window itself.** Cue's page loads in a few tens of milliseconds. The remaining time between the click and the popup is the browser. In Vivaldi, a web panel opens faster than the toolbar popup because it stays loaded.
@@ -125,6 +127,9 @@ Cue asks for access to all sites because media can play on any site. It uses thi
 
 - metadata, artwork, and the clock
 - the YouTube player clock, seek, and volume, on a page that imitates YouTube's player
+- clock correction when the page's clock jumps without a media event
+- YouTube ads: the "Ad" label, seeking off, and Skip ad
+- live streams: `LIVE`, the gap growing while paused, and Go live; and a site that declares live with `setPositionState()`
 - media inside a shadow root (the test calls the audible-tab handler directly, because headless Chromium never marks a tab as audible)
 - next and previous through Media Session handlers
 - play, pause, seek, volume, speed, mute, and pause all

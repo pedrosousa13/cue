@@ -238,8 +238,13 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+.live.behind {
+  color: var(--muted);
+}
+
 .live {
   justify-self: start;
+  white-space: nowrap;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.06em;

@@ -85,6 +85,11 @@ const clock = (seconds, total = seconds) => {
   return total >= 3600 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 };
 
+// The live edge keeps moving, so the gap grows while paused and holds while
+// playing at normal speed.
+const behindOf = ({ state }) =>
+  state.behind + ((Date.now() - state.at) / 1000) * (state.advancing ? 1 - state.rate : 1);
+
 const spoken = (seconds) => {
   const t = Math.max(0, Math.floor(seconds));
   const m = Math.floor(t / 60);
@@ -92,8 +97,10 @@ const spoken = (seconds) => {
   return `${m} minute${m === 1 ? "" : "s"} ${s} second${s === 1 ? "" : "s"}`;
 };
 
+// The clock moves only while playback is advancing: a player that is
+// buffering reports playing, but no sound is coming out.
 const positionOf = ({ state }) => {
-  const p = state.playing ? state.position + ((Date.now() - state.at) / 1000) * state.rate : state.position;
+  const p = state.advancing ? state.position + ((Date.now() - state.at) / 1000) * state.rate : state.position;
   return state.duration > 0 ? Math.min(state.duration, Math.max(0, p)) : Math.max(0, p);
 };
 
@@ -174,7 +181,8 @@ function createCard() {
 
   const rate = el("button", { type: "button", className: "pill rate", title: "Playback speed" });
   const skipAd = el("button", { type: "button", className: "pill skip-ad" }, "Skip ad");
-  const left = el("div", { className: "left" }, rate, skipAd);
+  const goLive = el("button", { type: "button", className: "pill go-live" }, "Go live");
+  const left = el("div", { className: "left" }, rate, skipAd, goLive);
   const prev = iconButton("prev", "Previous track");
   const play = el("button", { type: "button", className: "play" });
   const next = iconButton("next", "Next track");
@@ -194,7 +202,7 @@ function createCard() {
   const root = el("li", { className: "card" }, top, progress, controls, callBox);
   Object.assign(card, {
     root, art, artImg, title, artist, chapter, sourceIcon, sourceText, pip, hide,
-    current, seek, total, marks, progress, rate, skipAd, prev, play, next, mute, volume,
+    current, seek, total, marks, progress, rate, skipAd, goLive, prev, play, next, mute, volume,
     controls, callBox, mic, camera, hangup, chaptersKey: "",
   });
 
@@ -204,6 +212,7 @@ function createCard() {
   pip.onclick = () => togglePip(card.item);
   hide.onclick = () => chrome.runtime.sendMessage({ type: "dismiss", tabId: card.item.tabId }).catch(() => {});
   skipAd.onclick = () => command(card.item, "skipad");
+  goLive.onclick = () => command(card.item, "golive");
   mic.onclick = () => command(card.item, "togglemicrophone");
   camera.onclick = () => command(card.item, "togglecamera");
   hangup.onclick = () => command(card.item, "hangup");
@@ -320,7 +329,7 @@ function paint(card) {
   card.next.disabled = state.live && !nextTrack;
 
   card.rate.textContent = `${Number(state.rate.toFixed(2))}×`;
-  card.rate.hidden = state.live || has("skipad"); // during an ad, Skip ad takes its place
+  card.rate.hidden = state.live || state.ad || has("skipad"); // during an ad, Skip ad takes its place
 
   setIcon(card.mute, item.muted ? "muted" : "volume", item.muted ? "Unmute tab" : "Mute tab");
   card.mute.setAttribute("aria-pressed", String(item.muted));
@@ -330,7 +339,8 @@ function paint(card) {
     card.volume.style.setProperty("--p", `${v * 100}%`);
   }
 
-  const seekable = state.duration > 0;
+  // Ads cannot be seeked: the clock is the ad's, and seeking would act on it.
+  const seekable = state.duration > 0 && !state.ad;
   card.seek.disabled = !seekable;
   card.seek.max = String(seekable ? state.duration : 1);
   card.total.textContent = seekable ? clock(state.duration) : "";
@@ -341,11 +351,17 @@ function paint(card) {
 function tick(card) {
   const { state } = card.item;
   if (state.live) {
-    card.current.textContent = "LIVE";
+    // At the edge: LIVE. Paused or behind: how far, and a way back.
+    const behind = state.canGoLive ? behindOf(card.item) : 0;
+    const atEdge = behind < 5 && state.advancing;
+    card.current.textContent = behind >= 5 ? `LIVE −${clock(behind)}` : "LIVE";
+    card.current.classList.toggle("behind", !atEdge);
+    card.goLive.hidden = !(state.canGoLive && behind >= 5);
     card.seek.style.setProperty("--p", "100%");
-    card.seek.setAttribute("aria-valuetext", "Live stream");
+    card.seek.setAttribute("aria-valuetext", behind >= 5 ? `Live stream, ${spoken(behind)} behind` : "Live stream");
     return;
   }
+  card.goLive.hidden = true;
   if (card.dragging) return;
   const position = positionOf(card.item);
   const seekable = state.duration > 0;
@@ -354,8 +370,8 @@ function tick(card) {
   card.current.textContent = clock(position, state.duration);
   let chapter = null;
   for (const c of state.chapters) if (c.start <= position) chapter = c;
-  card.chapter.textContent = chapter ? chapter.title : "";
-  card.chapter.hidden = !chapter;
+  card.chapter.textContent = state.ad ? "Ad" : chapter ? chapter.title : "";
+  card.chapter.hidden = !state.ad && !chapter;
   card.seek.setAttribute(
     "aria-valuetext",
     seekable ? `${spoken(position)} of ${spoken(state.duration)}` : "Not seekable"
@@ -419,7 +435,8 @@ function render() {
 // The clock only runs while something plays and the panel is visible.
 let ticker = 0;
 function syncTicker() {
-  const needed = !document.hidden && items.some((i) => i.state.playing && !i.state.live);
+  // Live cards tick too: the gap behind live grows while paused.
+  const needed = !document.hidden && items.some((i) => i.state.playing || (i.state.live && i.state.canGoLive));
   if (needed && !ticker) ticker = setInterval(() => cards.forEach(tick), 250);
   if (!needed && ticker) {
     clearInterval(ticker);
