@@ -6,7 +6,7 @@
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
   // Keep equal to manifest.json "version"; npm test checks it.
-  const VERSION = "0.4.1";
+  const VERSION = "0.4.2";
   const INSTALLED = Symbol.for("cue.installed");
   if (window[INSTALLED] === VERSION) return; // already running in this frame
   // An older copy is still here after an extension update. Tell it to stop
@@ -203,13 +203,22 @@
   const youtubeAd = (mp) =>
     mp.classList.contains("ad-showing") ||
     mp.classList.contains("ad-interrupting") ||
-    !!mp.querySelector(".ytp-ad-player-overlay, .ytp-ad-player-overlay-layout");
+    !!mp.querySelector(
+      ".ytp-ad-player-overlay, .ytp-ad-player-overlay-layout, .ytp-ad-preview-container, .ytp-ad-text"
+    );
 
   // YouTube's own Skip button, when it is on screen. Cue only presses it when
   // the user clicks Skip ad, the same as clicking it on the page.
+  // Known class names first, then any button in YouTube's ad area whose class
+  // mentions "skip". Not the button text: it changes with the language.
   const youtubeSkipButton = () => {
-    const button = document.querySelector(".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern");
-    return button && button.offsetParent !== null ? button : null;
+    const visible = (b) => b && b.offsetParent !== null;
+    const known = document.querySelector(".ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern");
+    if (visible(known)) return known;
+    for (const b of document.querySelectorAll('.video-ads button, .ytp-ad-module button, #movie_player [class*="ad"] button')) {
+      if (/skip/i.test(b.className) && visible(b)) return b;
+    }
+    return null;
   };
 
   const youtubeClock = (mp, el) => {
@@ -271,7 +280,8 @@
   const up = (node) => node.parentNode || (node instanceof ShadowRoot ? node.host : null);
 
   const contextInfo = (el) => {
-    const info = { title: "", artist: "", artwork: "" };
+    // artist: from the post or page around the element. site: the site's name.
+    const info = { title: "", artist: "", site: "", artwork: "" };
     if (el instanceof HTMLVideoElement && el.poster) info.artwork = el.poster;
     for (let node = el, depth = 0; node && depth < 40; node = up(node), depth++) {
       if (node.nodeType !== 1) continue;
@@ -279,7 +289,9 @@
       const postTitle = node.getAttribute("post-title");
       if (postTitle) {
         info.title = postTitle;
-        info.artist = node.getAttribute("subreddit-prefixed-name") || node.getAttribute("author") || "";
+        const sub = node.getAttribute("subreddit-name");
+        info.artist =
+          node.getAttribute("subreddit-prefixed-name") || (sub ? `r/${sub}` : "") || node.getAttribute("author") || "";
         break;
       }
       if (node.tagName === "ARTICLE" || node.getAttribute("role") === "article") {
@@ -289,11 +301,22 @@
       }
     }
     if (!info.title) info.title = el.getAttribute("aria-label") || el.title || "";
-    if (!info.artist) {
-      const site = document.querySelector('meta[property="og:site_name"]');
-      info.artist = (site && site.content) || "";
+    if (!info.title) {
+      const og = document.querySelector('meta[property="og:title"]');
+      info.title = (og && og.content) || "";
     }
+    const site = document.querySelector('meta[property="og:site_name"]');
+    info.site = (site && site.content) || "";
     return info;
+  };
+
+  // "Reddit" as the artist on reddit.com says nothing the card does not
+  // already show. Treat an artist that only names the site as missing.
+  const namesSite = (artist, site) => {
+    const a = artist.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!a) return true;
+    if (site && a === site.toLowerCase().replace(/[^a-z0-9]/g, "")) return true;
+    return location.hostname.replace(/[^a-z0-9]/gi, "").toLowerCase().includes(a);
   };
 
   // --- Picking the element the user is listening to --------------------------
@@ -404,7 +427,7 @@
     const edge = live ? liveEdge(el, mp) : null;
 
     const actions = [...handlers.keys()];
-    const context = el && !(md && md.title) ? contextInfo(el) : null;
+    const context = el ? contextInfo(el) : null;
     if (ad && !actions.includes("skipad") && youtubeSkipButton()) actions.push("skipad");
 
     return {
@@ -419,7 +442,10 @@
       ad,
       rate,
       title: text(md && md.title) || text(context && context.title) || text(document.title) || location.hostname,
-      artist: text(md && md.artist) || text(context && context.artist),
+      artist:
+        md && md.artist && !(context && context.artist && namesSite(md.artist, context.site))
+          ? text(md.artist)
+          : text(context && (context.artist || context.site)),
       album: text(md && md.album),
       artwork: (md && artworkUrl(md.artwork)) || (context ? artworkUrl([{ src: context.artwork }]) : ""),
       actions,

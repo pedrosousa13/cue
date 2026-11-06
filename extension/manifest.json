@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Cue: Media Controls for Every Tab",
   "short_name": "Cue",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Control audio and video in every tab from the toolbar or the side panel.",
   "minimum_chrome_version": "116",
   "permissions": [

@@ -93,10 +93,14 @@ const PAGES = {
       window.startYtAd = () => {
         mp.classList.add("ad-showing");
         const b = document.createElement("button");
-        b.className = "ytp-skip-ad-button";
+        // A class name YouTube has not used: found by the "skip" fallback.
+        b.className = location.search === "?renamed" ? "ytp-future-skip-thing" : "ytp-skip-ad-button";
         b.textContent = "Skip";
-        b.onclick = () => { yt.skipped++; mp.classList.remove("ad-showing"); b.remove(); a.dispatchEvent(new Event("durationchange")); };
-        mp.append(b);
+        b.onclick = () => { yt.skipped++; mp.classList.remove("ad-showing"); b.closest(".video-ads").remove(); a.dispatchEvent(new Event("durationchange")); };
+        const ads = document.createElement("div");
+        ads.className = "video-ads ytp-ad-module";
+        ads.append(b);
+        mp.append(ads);
         a.dispatchEvent(new Event("durationchange"));
       };
       mp.getVolume = () => vol;
@@ -139,6 +143,7 @@ const PAGES = {
   // Reddit-like: no Media Session; the post element carries the title, and the
   // player keeps its video in a shadow root.
   "/reddit.html": `<!doctype html><title>Reddit - Dive into anything</title>
+    <meta property="og:site_name" content="Reddit">
     <shreddit-post post-title="Cat does a perfect backflip" subreddit-prefixed-name="r/aww">
       <shreddit-player-2></shreddit-player-2>
     </shreddit-post>
@@ -146,6 +151,10 @@ const PAGES = {
       const root = document.querySelector("shreddit-player-2").attachShadow({ mode: "open" });
       root.innerHTML = '<video id="v" src="/tone.wav" poster="/art.svg"></video>';
       window.v = root.getElementById("v");
+      // Real Reddit publishes the post title, with "Reddit" as the artist.
+      if (location.search === "?ms") {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: "Cat does a perfect backflip", artist: "Reddit" });
+      }
     </script>`,
   "/article.html": `<!doctype html><title>Example News</title>
     <meta property="og:site_name" content="Example News">
@@ -532,6 +541,19 @@ await step("a site can declare live with setPositionState", async () => {
   await page.close();
 });
 
+await step("Skip ad still works if YouTube renames its Skip button", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/yt.html?renamed`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "YT Artist" });
+  await c.waitFor({ timeout: 4000 });
+  await page.evaluate(() => startYtAd());
+  await c.locator("button.skip-ad").click({ timeout: 3000 });
+  await until(() => page.evaluate(() => yt.skipped === 1));
+  await page.close();
+});
+
 await step("audible tab with media in a shadow root is found", async () => {
   const page = await ctx.newPage();
   await page.goto(`${base}/shadow.html`);
@@ -556,6 +578,17 @@ await step("Reddit post: title and subreddit from the post, art from the poster"
   await c.waitFor({ timeout: 4000 });
   assert.match(await c.locator(".artist").textContent(), /r\/aww/);
   assert.match(await c.locator(".art img").getAttribute("src"), /\/art\.svg$/);
+  await page.close();
+});
+
+await step("Reddit's own artist 'Reddit' is replaced by the subreddit", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/reddit.html?ms`);
+  await page.evaluate(() => v.play());
+  await panel.bringToFront();
+  const c = panel.locator(".card").filter({ hasText: "Cat does a perfect backflip" });
+  await c.waitFor({ timeout: 4000 });
+  await c.locator(".artist", { hasText: "r/aww" }).waitFor({ timeout: 2000 });
   await page.close();
 });
 

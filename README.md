@@ -101,6 +101,23 @@ Summary:
 
 Sources: [Chrome Help: control your music and videos](https://support.google.com/chrome/answer/9692215?hl=en), [Chrome picture-in-picture in media controls](https://mspoweruser.com/great-news-you-can-now-activate-the-picture-in-picture-mode-directly-from-the-global-media-controls-in-chrome/), [Brave media controls issue #12943](https://github.com/brave/brave-browser/issues/12943), [Vivaldi forum: media hub request](https://forum.vivaldi.net/topic/43572/media-control-feature-like-media-hub-of-chrome), [Vivaldi 8.3 release notes](https://vivaldi.com/blog/vivaldi-on-mobile-8-3/). Vivaldi 8.3 adds media controls for tabs on Android only.
 
+## Site-specific code and fallbacks
+
+Most of Cue uses web standards that do not depend on a site's design: media elements and the Media Session API. Some details need a site's page structure, and sites change their design. Each of those details has a chain of fallbacks. When a site changes, the first steps stop matching and Cue uses the next one. The card loses a detail; it does not break.
+
+| What | Tried in this order |
+| --- | --- |
+| Title, when the site publishes none | Reddit `post-title` → enclosing article heading → element label → page `og:title` → tab title → host name |
+| Artist line | the site's Media Session artist, unless it only names the site → Reddit `subreddit-prefixed-name` → `subreddit-name` → author → `og:site_name` |
+| Artwork | the site's Media Session artwork → the video's poster image → the tab icon |
+| YouTube track clock | the site's `setPositionState()` → YouTube player's progress → media element |
+| YouTube volume | YouTube player's volume → media element volume |
+| YouTube live | infinite duration → `setPositionState()` → YouTube player data → a duration longer than about 11 days |
+| YouTube ad | player class `ad-showing` or `ad-interrupting` → ad overlay, countdown, or ad text element |
+| YouTube Skip button | the site's `skipad` handler → known class names → any button in the ad area whose class contains "skip" |
+
+The tests include a YouTube Skip button with an unknown class name, to check the last fallback.
+
 ## Privacy
 
 Cue collects no data and makes no network requests. Playback state stays in your browser and is deleted when the browser closes. Cue also keeps your settings and the volume you chose for each site. See [PRIVACY.md](PRIVACY.md).
