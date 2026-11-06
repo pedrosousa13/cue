@@ -237,6 +237,13 @@ await step("page reload clears the stale card", async () => {
   await until(async () => (await panel.locator(".card").count()) === 0);
 });
 
+await step("toolbar popup page has a fixed popup width", async () => {
+  const popup = await ctx.newPage();
+  await popup.goto(`chrome-extension://${extId}/popup.html`);
+  assert.equal(await popup.evaluate(() => document.body.getBoundingClientRect().width), 380);
+  await popup.close();
+});
+
 await ctx.close();
 server.close();
 console.log(`\n${passed} passed, ${failed} failed`);

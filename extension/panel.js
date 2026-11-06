@@ -332,12 +332,6 @@ pauseAllEl.onclick = () => items.filter((i) => i.state.playing).forEach((i) => c
 const theme = new URLSearchParams(location.search).get("theme");
 if (theme === "dark" || theme === "light") document.documentElement.dataset.theme = theme;
 
-try {
-  if (chrome.extension.getViews({ type: "popup" }).includes(window)) {
-    document.documentElement.classList.add("popup");
-  }
-} catch {}
-
 chrome.storage.session.get("tabs").then(({ tabs }) => update(tabs));
 chrome.storage.session.onChanged.addListener((changes) => {
   if (changes.tabs) update(changes.tabs.newValue);

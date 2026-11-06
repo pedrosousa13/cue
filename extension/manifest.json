@@ -28,7 +28,7 @@
     }
   ],
   "action": {
-    "default_popup": "panel.html",
+    "default_popup": "popup.html",
     "default_title": "Cue",
     "default_icon": {
       "16": "icons/icon-16.png",
