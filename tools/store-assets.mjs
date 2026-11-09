@@ -106,7 +106,7 @@ const panelShot = async (scheme) => {
 };
 const optionsShot = async () => {
   const p = await ctx.newPage();
-  await p.setViewportSize({ width: 460, height: 300 });
+  await p.setViewportSize({ width: 452, height: 300 }); // the page is 420 px plus 16 px padding each side
   await p.goto(`chrome-extension://${id}/options.html`);
   await p.locator('input[name="autoPause"]').check();
   const png = await p.screenshot();

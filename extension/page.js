@@ -6,7 +6,7 @@
 // carry JSON strings. Strings cross the world boundary intact; objects do not.
 (() => {
   // Keep equal to manifest.json "version"; npm test checks it.
-  const VERSION = "0.5.0";
+  const VERSION = "0.6.0";
   const INSTALLED = Symbol.for("cue.installed");
   if (window[INSTALLED] === VERSION) return; // already running in this frame
   // An older copy is still here after an extension update. Tell it to stop
@@ -343,6 +343,27 @@
 
   let current = null; // the element the last snapshot reported
 
+  // Chrome's own media controls list a tab only after it plays with sound:
+  // not muted, volume above 0, with an audio track, and at least 5 s long
+  // (shorter clips are notification sounds). Cue does the same, so a muted
+  // background video or a click sound gets no card. Once a tab has been heard
+  // it keeps its card, also when the user mutes it or pauses it.
+  let heard = false;
+  const silent = (el) => el.muted || el.volume === 0;
+  const audible = (el) => {
+    if (el.paused || el.ended || silent(el) || !(el.duration >= 5)) return false;
+    // A stream (a canvas drawn into a video, as timers do for a floating
+    // picture-in-picture window) has sound only if it carries an audio track.
+    if (el.srcObject) return typeof el.srcObject.getAudioTracks !== "function" || el.srcObject.getAudioTracks().length > 0;
+    // A video file without an audio track decodes no audio bytes (Chrome
+    // only). Checked again on timeupdate, so a track that starts late
+    // still counts.
+    if (typeof el.webkitAudioDecodedByteCount === "number" && el instanceof HTMLVideoElement) {
+      return el.webkitAudioDecodedByteCount > 0;
+    }
+    return true;
+  };
+
   const primary = () => {
     let best = null;
     let bestScore = -1;
@@ -361,6 +382,10 @@
         continue;
       }
       if (el.paused && el.readyState === 0) continue; // nothing loaded yet
+      if (audible(el)) heard = true;
+      // A muted element plays beside the one you listen to (a background
+      // video next to a player): it cannot be the card's element.
+      if (silent(el) && el !== current) continue;
       // A detached paused element never outranks media that is in the page.
       const s = score(el) - (detachedPaused ? 6 : 0);
       if (s > bestScore) {
@@ -402,7 +427,7 @@
     // A call page may have no media element the panel can use, but its
     // mic, camera and hang-up handlers are still worth showing.
     const inCall = CALL_ACTIONS.some((a) => handlers.has(a));
-    if (!found && !inCall) return null;
+    if (!inCall && (!found || !heard)) return null;
     const el = found ? found.el : null;
     current = el;
     const md = navigator.mediaSession && navigator.mediaSession.metadata;

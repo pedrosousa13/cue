@@ -158,6 +158,7 @@ async function handleState(sender, raw) {
   const tab = sender.tab;
   const frameId = sender.frameId ?? 0;
   if (removedTabs.has(tab.id)) return;
+  reportAsked.delete(tab.id);
   const state = sanitize(raw);
   if (state) {
     state.host = senderHost(sender);
@@ -241,11 +242,30 @@ function onAudibleUnknown(tabId) {
   return chrome.tabs.sendMessage(tabId, { type: "command", action: "scan" }).catch(() => {});
 }
 
+// A new document (a reload or a navigation) stays silent until it plays with
+// sound, so it cannot replace the old page's card itself. The old page's
+// pagehide usually removes the card; this covers a lost message. Chrome also
+// reports "loading" for in-page navigations (YouTube's next video), so ask the
+// tab first: a page that is still there answers with its state at once.
+const reportAsked = new Map(); // tabId -> time of the last "report" request
+function checkAfterLoading(tabId) {
+  const asked = Date.now();
+  reportAsked.set(tabId, asked);
+  chrome.tabs.sendMessage(tabId, { type: "command", action: "report" }).catch(() => {});
+  setTimeout(async () => {
+    if (reportAsked.get(tabId) !== asked) return; // a frame answered
+    reportAsked.delete(tabId);
+    await loaded;
+    if (tabs.delete(tabId)) save();
+  }, 1500);
+}
+
 chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
   await loaded;
   const entry = tabs.get(tabId);
   if (!entry && change.audible === true) return onAudibleUnknown(tabId);
   if (!entry) return;
+  if (change.status === "loading") return checkAfterLoading(tabId);
   if (change.discarded) {
     tabs.delete(tabId);
   } else if ("mutedInfo" in change || "title" in change || "favIconUrl" in change) {

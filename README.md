@@ -4,7 +4,7 @@ Media controls for every tab. Cue lists every tab that plays audio or video, and
 
 ## Features
 
-- **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Playing tabs come first. When a site does not publish what is playing, Cue reads it from the page: the post title and subreddit on Reddit, or the article heading on other sites, with the video's thumbnail as artwork.
+- **Every tab, one list.** Title, artist, artwork, and site for each tab that plays media. Like Chrome's own media controls, Cue lists a tab only after it plays sound from media at least 5 seconds long, so muted background videos and notification sounds get no card. Playing tabs come first. When a site does not publish what is playing, Cue reads it from the page: the post title and subreddit on Reddit, or the article heading on other sites, with the video's thumbnail as artwork.
 - **Real next and previous.** Cue calls the site's own track handlers (the Media Session API), the same ones that your keyboard media keys use. This works on any site that supports media keys, with no per-site code. When a site has no track handlers, the buttons skip 10 seconds.
 - **Seek bar and clock.** Drag to seek. The clock stops while the player buffers, and Cue corrects it if it drifts from the page. When a site publishes chapters, the seek bar marks them and the card names the current chapter.
 - **Live streams.** The card shows `LIVE` at the live edge. When you pause or fall behind, it shows how far behind you are (for example `LIVE −0:42`) and a **Go live** button.
@@ -52,7 +52,7 @@ To change a shortcut, or to make it work when the browser is not focused, open `
 
 ### Settings
 
-Click the sliders icon in the Cue header, or open Cue's **Extension options**. You can turn on auto-pause, turn off volume memory, and choose what the toolbar badge counts: tabs in Cue, tabs playing, or nothing.
+Click the sliders icon in the Cue header, or open Cue's **Extension options**. You can turn on auto-pause, turn off volume memory, and choose what the toolbar badge counts: tabs playing (the default), tabs in Cue, or nothing.
 
 ## How it works
 

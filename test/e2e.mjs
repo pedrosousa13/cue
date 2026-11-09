@@ -28,6 +28,17 @@ function tone(seconds = 60, rate = 8000) {
   return buf;
 }
 
+// Cue lists only media that plays with sound, like Chrome's media controls.
+// A canvas stream has no audio track, so the video pages add a quiet tone.
+const WITH_SOUND = `
+      function withSound(stream) {
+        const ac = new AudioContext(), osc = ac.createOscillator(), gain = ac.createGain(), out = ac.createMediaStreamDestination();
+        gain.gain.value = 0.01;
+        osc.connect(gain).connect(out);
+        osc.start();
+        return new MediaStream([...stream.getVideoTracks(), ...out.stream.getAudioTracks()]);
+      }`;
+
 const PAGES = {
   "/music.html": `<!doctype html><title>Music page</title>
     <audio id="a" src="/tone.wav"></audio>
@@ -51,12 +62,12 @@ const PAGES = {
     </script>`,
   "/video.html": `<!doctype html><title>Video page</title>
     <canvas id="c" width="320" height="180"></canvas>
-    <video id="v" muted playsinline width="320" height="180"></video>
-    <script>
+    <video id="v" playsinline width="320" height="180"></video>
+    <script>${WITH_SOUND}
       const c = document.getElementById("c"), g = c.getContext("2d");
       let f = 0;
       setInterval(() => { g.fillStyle = "hsl(" + (f++ * 7) % 360 + ",70%,50%)"; g.fillRect(0, 0, 320, 180); }, 50);
-      document.getElementById("v").srcObject = c.captureStream(20);
+      document.getElementById("v").srcObject = withSound(c.captureStream(20));
     </script>`,
   "/call.html": `<!doctype html><title>Call page</title>
     <script>
@@ -164,25 +175,34 @@ const PAGES = {
   "/hostile.html": `<!doctype html><title>Hostile page</title><audio id="a" src="/tone.wav"></audio>`,
   "/pip-hijack.html": `<!doctype html><title>Hijack page</title>
     <canvas id="c" width="320" height="180"></canvas>
-    <video id="v" muted playsinline width="320" height="180"></video>
-    <script>
+    <video id="v" playsinline width="320" height="180"></video>
+    <script>${WITH_SOUND}
       const c = document.getElementById("c"), g = c.getContext("2d");
       setInterval(() => g.fillRect(0, 0, 320, 180), 50);
-      document.getElementById("v").srcObject = c.captureStream(20);
+      document.getElementById("v").srcObject = withSound(c.captureStream(20));
       // Everything a page could try to catch Cue's click with.
       window.hijacked = 0;
       Object.defineProperty(window, Symbol.for("cue.pip"), { value: () => { hijacked++; window.open("about:blank"); }, configurable: true });
       const real = HTMLVideoElement.prototype.requestPictureInPicture;
       HTMLVideoElement.prototype.requestPictureInPicture = function () { hijacked++; return real.call(this); };
     </script>`,
-  "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
-  "/nopip.html": `<!doctype html><title>No PiP page</title>
+  "/timer.html": `<!doctype html><title>Timer page</title>
     <canvas id="c" width="320" height="180"></canvas>
-    <video id="v" muted playsinline disablepictureinpicture width="320" height="180"></video>
+    <video id="v" playsinline width="320" height="180"></video>
     <script>
       const c = document.getElementById("c"), g = c.getContext("2d");
       setInterval(() => g.fillRect(0, 0, 320, 180), 50);
-      document.getElementById("v").srcObject = c.captureStream(20);
+      document.getElementById("v").srcObject = c.captureStream(20); // no audio track
+    </script>`,
+  "/short.html": `<!doctype html><title>Short sound</title><audio id="a" src="/short.wav"></audio>`,
+  "/muted.html": `<!doctype html><title>Muted preview</title><audio id="a" src="/tone.wav" muted></audio>`,
+  "/nopip.html": `<!doctype html><title>No PiP page</title>
+    <canvas id="c" width="320" height="180"></canvas>
+    <video id="v" playsinline disablepictureinpicture width="320" height="180"></video>
+    <script>${WITH_SOUND}
+      const c = document.getElementById("c"), g = c.getContext("2d");
+      setInterval(() => g.fillRect(0, 0, 320, 180), 50);
+      document.getElementById("v").srcObject = withSound(c.captureStream(20));
     </script>`,
   "/detached.html": `<!doctype html><title>Detached page</title>
     <audio id="b" src="/tone.wav" preload="auto"></audio>
@@ -195,6 +215,7 @@ const PAGES = {
 };
 
 const WAV = tone(180);
+const SHORT_WAV = tone(2);
 let artCookies = []; // Cookie headers seen on artwork requests
 const server = createServer((req, res) => {
   // Only Cue's requests (a fetch, so mode "cors"): Chrome itself also loads
@@ -218,6 +239,10 @@ const server = createServer((req, res) => {
       "content-length": end - start + 1,
     });
     return res.end(WAV.subarray(start, end + 1));
+  }
+  if (req.url === "/short.wav") {
+    // A notification sound: Chrome's media controls ignore clips under 5 s.
+    return res.writeHead(200, { "content-type": "audio/wav" }).end(SHORT_WAV);
   }
   if (req.url === "/slow-art.svg") {
     // A thumbnail on a slow network.
@@ -409,8 +434,13 @@ await step("second tab appears; live stream shows LIVE and disables seek", async
   assert.equal(await vcard.locator('input[aria-label="Seek"]').isDisabled(), true);
 });
 
-await step("badge counts the tabs in Cue", async () => {
-  await until(async () => (await sw.evaluate(() => chrome.action.getBadgeText({}))) === "2");
+await step("badge counts the tabs that play", async () => {
+  const badge = () => sw.evaluate(() => chrome.action.getBadgeText({}));
+  await until(async () => (await badge()) === "2");
+  await video.evaluate(() => document.getElementById("v").pause());
+  await until(async () => (await badge()) === "1");
+  await video.evaluate(() => document.getElementById("v").play());
+  await until(async () => (await badge()) === "2");
 });
 
 await step("pause all pauses both tabs", async () => {
@@ -444,6 +474,12 @@ await step("call page shows mic, camera and hang-up instead of the transport", a
 await step("closing a tab removes its card", async () => {
   await video.close();
   await until(async () => (await panel.locator(".card").count()) === 1);
+});
+
+await step("an in-page navigation (pushState, as YouTube does) keeps the card", async () => {
+  await audio(() => history.pushState({}, "", "/music.html?next"));
+  await panel.waitForTimeout(800);
+  assert.equal(await card.count(), 1);
 });
 
 await step("page reload replaces the stale playing card", async () => {
@@ -767,14 +803,41 @@ await step("artwork is fetched without the site's cookies", async () => {
   await page.close();
 });
 
-await step("volume memory does not unmute a muted element", async () => {
+await step("a muted video gets no card; once heard, muting keeps the card", async () => {
   const page = await ctx.newPage();
   await page.goto(`${base}/muted.html`);
   await page.evaluate(() => document.getElementById("a").play());
   await panel.bringToFront();
-  await panel.locator(".card").filter({ hasText: "Muted preview" }).waitFor({ timeout: 4000 });
   await panel.waitForTimeout(500);
+  const c = panel.locator(".card").filter({ hasText: "Muted preview" });
+  assert.equal(await c.count(), 0);
+  // Unmuted, it plays with sound and gets a card, which stays when it is muted again.
+  await page.evaluate(() => (document.getElementById("a").muted = false));
+  await c.waitFor({ timeout: 4000 });
+  await page.evaluate(() => (document.getElementById("a").muted = true));
+  await panel.waitForTimeout(500);
+  assert.equal(await c.count(), 1);
   assert.equal(await page.evaluate(() => document.getElementById("a").muted), true);
+  await page.close();
+});
+
+await step("a video stream without an audio track gets no card", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/timer.html`);
+  await page.evaluate(() => document.getElementById("v").play());
+  await panel.bringToFront();
+  await panel.waitForTimeout(800);
+  assert.equal(await panel.locator(".card").filter({ hasText: "Timer page" }).count(), 0);
+  await page.close();
+});
+
+await step("a sound shorter than 5 s gets no card", async () => {
+  const page = await ctx.newPage();
+  await page.goto(`${base}/short.html`);
+  await page.evaluate(() => document.getElementById("a").play());
+  await panel.bringToFront();
+  await panel.waitForTimeout(800);
+  assert.equal(await panel.locator(".card").filter({ hasText: "Short sound" }).count(), 0);
   await page.close();
 });
 

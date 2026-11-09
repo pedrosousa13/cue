@@ -2,7 +2,7 @@
 const CUE_DEFAULTS = {
   autoPause: false, // pause other tabs when one starts playing with sound
   rememberVolume: true, // reapply the last volume set for a site
-  badge: "listed", // "listed" | "playing" | "off"
+  badge: "playing", // "listed" | "playing" | "off"
 };
 
 async function cueSettings() {

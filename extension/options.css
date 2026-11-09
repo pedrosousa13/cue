@@ -1,5 +1,15 @@
+/* The browser sizes the options dialog to this page's content, in width and
+   height. Where scrollbars take up space (Windows, or macOS with "always show
+   scrollbars"), a scrollbar made the content wider than the dialog, which
+   added the other scrollbar, which changed the size again, in a loop. So the
+   page never shows scrollbars (the dialog around it scrolls if it must) and
+   has a fixed width, so its size does not depend on the dialog's. */
+html {
+  overflow: hidden;
+}
+
 body {
-  min-width: 420px;
+  width: 420px;
   padding: 8px 16px;
   background: var(--card);
 }
